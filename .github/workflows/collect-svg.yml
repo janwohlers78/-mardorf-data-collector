@@ -1,0 +1,64 @@
+name: Collect SVG WeatherLink data
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-svg-collector
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WEATHERLINK_API_KEY: ${{ secrets.WEATHERLINK_API_KEY }}
+      WEATHERLINK_API_SECRET: ${{ secrets.WEATHERLINK_API_SECRET }}
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check requests
+      - name: Check credentials
+        id: creds
+        shell: bash
+        run: |
+          if [ -n "$WEATHERLINK_API_KEY" ] && [ -n "$WEATHERLINK_API_SECRET" ]; then
+            echo 'weatherlink=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'weatherlink=false' >> "$GITHUB_OUTPUT"
+            echo 'WeatherLink secrets are not configured; collection skipped.'
+          fi
+          if [ -n "$PRIVATE_REPO_TOKEN" ]; then
+            echo 'private_write=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'private_write=false' >> "$GITHUB_OUTPUT"
+            echo 'PRIVATE_REPO_TOKEN is not configured; transfer skipped.'
+          fi
+      - name: Fetch SVG current and recent history
+        if: steps.creds.outputs.weatherlink == 'true'
+        run: python src/fetch_svg_weatherlink.py
+      - name: Validate ephemeral bundle
+        if: steps.creds.outputs.weatherlink == 'true'
+        run: |
+          python -m json.tool work/svg_bundle.json >/dev/null
+          python - <<'PY'
+          import json
+          d=json.load(open('work/svg_bundle.json'))
+          assert d['station']['id']==42374
+          assert d.get('latest_observation',{}).get('time_utc')
+          assert d.get('retrieved_at_utc')
+          print({'latest':d['latest_observation']['time_utc'],'history':len(d.get('recent_historic_observations',[])),'quality':d.get('quality')})
+          PY
+      - name: Transfer bundle to private repository
+        if: steps.creds.outputs.weatherlink == 'true' && steps.creds.outputs.private_write == 'true'
+        run: python src/push_private.py --kind svg --file work/svg_bundle.json
