@@ -35,7 +35,7 @@ def grib_run_time(path):
 
 def step_end(step_range):
  import re
- nums=re.findall(r'\\d+',str(step_range))
+ nums=re.findall(r'\d+',str(step_range))
  return int(nums[-1]) if nums else None
 
 def fetch_ifs(leads):
