@@ -1,0 +1,77 @@
+name: Collect model source data
+
+on:
+  schedule:
+    - cron: '35 0,3,6,9,12,15,18,21 * * *'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Reduced lead set and no medium-range extension'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-model-collector
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      COLLECTOR_MODEL_FILE: work/model_snapshot.json
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools
+          grib_ls -V
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
+      - name: Fetch ICON-D2 and GFS
+        run: |
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            python src/fetch_model_data.py --test
+          else
+            python src/fetch_model_data.py
+          fi
+      - name: Fetch ECMWF-IFS and GEFS-control
+        run: |
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            python src/fetch_extra_models.py --test
+          else
+            python src/fetch_extra_models.py
+          fi
+      - name: Fetch ICON-EU and ICON-D2-EPS
+        run: |
+          if [ "${{ inputs.test_mode }}" = "true" ]; then
+            python src/fetch_dwd_additional_models.py --test
+          else
+            python src/fetch_dwd_additional_models.py
+          fi
+      - name: Extend eligible medium-range paths
+        if: inputs.test_mode != true
+        run: python src/extend_model_horizon.py
+      - name: Validate ephemeral bundle
+        run: |
+          python -m json.tool work/model_snapshot.json >/dev/null
+          python - <<'PY'
+          import json
+          d=json.load(open('work/model_snapshot.json'))
+          assert d.get('models'),d
+          assert set(d['models']) >= {'ICON-D2','GFS','ECMWF-IFS','GEFS-control','ICON-EU','ICON-D2-EPS'},d['models'].keys()
+          assert d.get('retrieved_at_utc'),d
+          print({'models':{k:len(v) for k,v in d['models'].items()},'quality':d.get('quality')})
+          PY
+      - name: Transfer bundle to private repository
+        if: inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
+        run: python src/push_private.py --kind models --file work/model_snapshot.json
