@@ -10,6 +10,7 @@ FAMILY={
     "ICON-D2":"DWD-ICON","ICON-D2-EPS":"DWD-ICON","ICON-EU":"DWD-ICON",
     "ECMWF-IFS":"ECMWF","GFS":"GFS","GEFS-control":"GFS",
 }
+POLICY_VERSION="collector-integrity-v1.1"
 
 def dt(v):
     if not v:return None
@@ -36,7 +37,7 @@ def make_report(kind,now,sources,issues,usable,extra):
     counts=Counter(x["severity"] for x in issues)
     status="PASS" if counts["ERROR"]==0 and counts["WARN"]==0 else "PASS_WITH_WARNINGS" if counts["ERROR"]==0 else "FAIL"
     return {
-        "schema_version":1,"method_version":"collector-integrity-v1","kind":kind,
+        "schema_version":1,"method_version":str(POLICY_VERSION),"kind":kind,
         "generated_at_utc":now.isoformat(),"status":status,
         "error_count":counts["ERROR"],"warning_count":counts["WARN"],"info_count":counts["INFO"],
         "bundle_ready_for_private_revalidation":bool(usable and counts["ERROR"]==0),
@@ -90,13 +91,18 @@ def audit_models(path,cfg,now):
             expected=[x for x in desired_leads(model,cfg) if pmax is not None and x<=pmax]
             project_gap=[x for x in desired_leads(model,cfg) if pmax is not None and x>pmax]
         got=sorted(lead_rows);missing=sorted(set(expected)-set(got));extra=sorted(set(got)-set(expected))
-        field_failures=[];timestamp_failures=[];source_errors=[]
+        field_failures=[];timestamp_failures=[];critical_source_errors=[];optional_source_warnings=[];outside_horizon_records=[]
+        expected_set=set(expected)
+        optional_fields=set(cfg["model_policy"].get("optional_weather_context_fields",[]))
         for lead,r in sorted(lead_rows.items()):
+            in_provider_scope=lead in expected_set
+            if not in_provider_scope:
+                outside_horizon_records.append({"lead_hours":lead,"reason":"outside_selected_provider_cycle_horizon"})
             der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
             req=list(cfg["model_policy"]["required_derived_fields"])
             if model in cfg["model_policy"]["required_gust_models"]:req.append("gust_ms")
             absent=[f for f in req if not finite(der.get(f))]
-            if absent:field_failures.append({"lead_hours":lead,"fields":absent})
+            if in_provider_scope and absent:field_failures.append({"lead_hours":lead,"fields":absent})
             rt=dt(r.get("run_time_utc"));vt=dt(r.get("valid_time_utc"))
             if rt is None or vt is None:
                 timestamp_failures.append({"lead_hours":lead,"run_time_utc":r.get("run_time_utc"),"valid_time_utc":r.get("valid_time_utc"),"reason":"unparseable_timestamp"})
@@ -104,21 +110,31 @@ def audit_models(path,cfg,now):
                 actual=(vt-rt).total_seconds()/3600
                 if abs(actual-lead)>0.06:
                     timestamp_failures.append({"lead_hours":lead,"run_time_utc":rt.isoformat(),"valid_time_utc":vt.isoformat(),"actual_lead_hours":round(actual,3),"reason":"declared_lead_differs_from_run_to_valid_interval"})
+            def record_problem(item,field=None):
+                if not in_provider_scope:
+                    item["classification"]="outside_provider_cycle_horizon"
+                    outside_horizon_records.append(item)
+                elif field in optional_fields:
+                    item["classification"]="optional_weather_context"
+                    optional_source_warnings.append(item)
+                else:
+                    item["classification"]="wind_or_record_critical"
+                    critical_source_errors.append(item)
             if r.get("error"):
-                source_errors.append({"lead_hours":lead,"location":"record","message":str(r["error"])})
+                record_problem({"lead_hours":lead,"location":"record","message":str(r["error"])})
             if r.get("error_type") or r.get("error_message"):
-                source_errors.append({"lead_hours":lead,"location":"record","exception_type":r.get("error_type"),"message":r.get("error_message")})
+                record_problem({"lead_hours":lead,"location":"record","exception_type":r.get("error_type"),"message":r.get("error_message")})
             if r.get("derive_error"):
-                source_errors.append({"lead_hours":lead,"location":"derive","message":str(r["derive_error"])})
+                record_problem({"lead_hours":lead,"location":"derive","message":str(r["derive_error"])})
             if r.get("derive_error_type") or r.get("derive_error_message"):
-                source_errors.append({"lead_hours":lead,"location":"derive","exception_type":r.get("derive_error_type"),"message":r.get("derive_error_message")})
+                record_problem({"lead_hours":lead,"location":"derive","exception_type":r.get("derive_error_type"),"message":r.get("derive_error_message")})
             vals=r.get("values")
             if isinstance(vals,dict):
                 for key,val in vals.items():
                     if isinstance(val,dict) and val.get("error"):
-                        source_errors.append({"lead_hours":lead,"location":"values."+key,"message":str(val["error"])})
+                        record_problem({"lead_hours":lead,"location":"values."+key,"message":str(val["error"])},key)
                     if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
-                        source_errors.append({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")})
+                        record_problem({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")},key)
 
         model_qerrors=[str(x) for x in qerrors if str(x).startswith(model+":")]
         if len(run_values)==0:
@@ -143,6 +159,10 @@ def audit_models(path,cfg,now):
                 "These project-desired long-range leads are outside the documented horizon of the selected provider cycle; this is not a download failure.",
                 selected_cycle_hour_utc=run_hour,provider_expected_max_horizon_hours=pmax,
                 project_desired_but_cycle_unavailable_leads_hours=project_gap))
+        if extra:
+            issues.append(issue("RECORDS_OUTSIDE_SELECTED_PROVIDER_CYCLE_HORIZON","INFO",model,"coverage",
+                "Records or placeholders outside the selected cycle's documented horizon are excluded from completeness and field-failure gates.",
+                provider_expected_max_horizon_hours=pmax,extra_received_leads_hours=extra))
         if field_failures:
             issues.append(issue("REQUIRED_DERIVED_FIELDS_UNAVAILABLE","ERROR",model,"fields",
                 "Wind data required by the private integrity gate could not be derived for specific leads.",
@@ -151,10 +171,14 @@ def audit_models(path,cfg,now):
             issues.append(issue("FORECAST_TIMESTAMP_OR_LEAD_INCONSISTENCY","ERROR",model,"timestamps",
                 "Declared run/valid/lead metadata are internally inconsistent for specific records.",
                 affected_records=timestamp_failures))
-        if source_errors or model_qerrors:
+        if critical_source_errors or model_qerrors:
             issues.append(issue("SOURCE_FETCH_OR_DECODE_ERRORS_RECORDED","ERROR",model,"provider_fetch",
-                "Provider requests, GRIB extraction or field derivation recorded explicit errors.",
-                record_errors=source_errors,quality_errors=model_qerrors))
+                "Wind-critical provider requests, GRIB extraction or field derivation recorded explicit errors.",
+                record_errors=critical_source_errors,quality_errors=model_qerrors))
+        if optional_source_warnings:
+            issues.append(issue("OPTIONAL_WEATHER_CONTEXT_FIELDS_UNAVAILABLE","WARN",model,"optional_weather_context",
+                "Optional precipitation/CAPE context is incomplete at specific leads; wind-core completeness is unaffected.",
+                affected_fields=optional_source_warnings))
         run_age=None;age_limit=float(cfg["model_policy"]["maximum_run_age_hours"][model])
         if run:
             run_age=(now-run).total_seconds()/3600
@@ -178,9 +202,11 @@ def audit_models(path,cfg,now):
             "expected_collection_leads_hours":expected,"received_leads_hours":got,"missing_expected_leads_hours":missing,
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
-            "timestamp_failures":timestamp_failures,"provider_or_decode_errors":source_errors,
+            "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
+            "optional_weather_context_warnings":optional_source_warnings,
+            "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
-            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,field_failures,timestamp_failures,source_errors,model_qerrors]) and run is not None,
+            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,field_failures,timestamp_failures,critical_source_errors,model_qerrors]) and run is not None,
             "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 
