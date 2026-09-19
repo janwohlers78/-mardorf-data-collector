@@ -89,20 +89,29 @@ def fetch_noaa(data,model,gefs=False):
     return out
 
 
+def step_end(step_range):
+    nums=re.findall(r'\\d+',str(step_range))
+    return int(nums[-1]) if nums else None
+
 def fetch_ifs(data):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
+    leads=leads_for_cycle('ECMWF-IFS',base)
     client=Client(source='ecmwf',model='ifs',resol='0p25')
     with tempfile.TemporaryDirectory() as td:
-        for lead in leads_for_cycle('ECMWF-IFS',base):
-            p=Path(td)/f'ifs_{lead}.grib2'
-            result=client.retrieve(
-                date=base.strftime('%Y%m%d'),time=base.hour,stream='oper',type='fc',
-                step=lead,param=['10u','10v','10fg','tp','mucape'],target=str(p))
-            actual=grib_run_time(p)
-            if actual!=base:
-                raise RuntimeError(f'ECMWF run identity mismatch lead={lead}: expected {base.isoformat()} got {actual.isoformat()}')
-            vals={}
-            for n,s,v in nearest(p):vals.setdefault(n,[]).append({'stepRange':s,'value':v})
+        p=Path(td)/'ifs_medium_range_batch.grib2'
+        client.retrieve(
+            date=base.strftime('%Y%m%d'),time=base.hour,stream='oper',type='fc',
+            step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(p))
+        actual=grib_run_time(p)
+        if actual!=base:
+            raise RuntimeError(f'ECMWF run identity mismatch: expected {base.isoformat()} got {actual.isoformat()}')
+        bylead={int(x):{} for x in leads}
+        for n,s,v in nearest(p):
+            lead=step_end(s)
+            if lead not in bylead:continue
+            bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
+        for lead in leads:
+            vals=bylead[int(lead)]
             def one(*ns):
                 for n in ns:
                     if vals.get(n):return vals[n][0]['value']
@@ -111,7 +120,7 @@ def fetch_ifs(data):
             rec={'model':'ECMWF-IFS','run_time_utc':actual.isoformat(),'forecast_lead_hours':lead,
                  'valid_time_utc':(actual+timedelta(hours=lead)).isoformat(),
                  'source':'ECMWF Open Data raw GRIB2','values':vals,
-                 'source_request':{'date':base.strftime('%Y%m%d'),'time':base.hour,'step':lead}}
+                 'source_request':{'date':base.strftime('%Y%m%d'),'time':base.hour,'steps':leads}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
     return out
