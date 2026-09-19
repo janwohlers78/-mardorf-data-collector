@@ -1,6 +1,11 @@
 name: Collect model source data
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/collect-models.yml'
   schedule:
     - cron: '35 0,3,6,9,12,15,18,21 * * *'
   workflow_dispatch:
@@ -39,27 +44,27 @@ jobs:
         run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
       - name: Fetch ICON-D2 and GFS
         run: |
-          if [ "${{ inputs.test_mode }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_model_data.py --test
           else
             python src/fetch_model_data.py
           fi
       - name: Fetch ECMWF-IFS and GEFS-control
         run: |
-          if [ "${{ inputs.test_mode }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_extra_models.py --test
           else
             python src/fetch_extra_models.py
           fi
       - name: Fetch ICON-EU and ICON-D2-EPS
         run: |
-          if [ "${{ inputs.test_mode }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_dwd_additional_models.py --test
           else
             python src/fetch_dwd_additional_models.py
           fi
       - name: Extend eligible medium-range paths
-        if: inputs.test_mode != true
+        if: github.event_name != 'push' && inputs.test_mode != true
         run: python src/extend_model_horizon.py
       - name: Validate ephemeral bundle
         run: |
@@ -73,5 +78,5 @@ jobs:
           print({'models':{k:len(v) for k,v in d['models'].items()},'quality':d.get('quality')})
           PY
       - name: Transfer bundle to private repository
-        if: inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
+        if: github.event_name != 'push' && inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
         run: python src/push_private.py --kind models --file work/model_snapshot.json
