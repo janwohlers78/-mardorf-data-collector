@@ -39,7 +39,27 @@ def derived(u,v,g=None):
 def cycle_from_existing(data,model):
     recs=data.get('models',{}).get(model,[])
     if not recs:raise RuntimeError(f'no existing {model} records')
-    return datetime.fromisoformat(recs[0]['run_time_utc']).astimezone(timezone.utc)
+    runs={r.get('run_time_utc') for r in recs if r.get('run_time_utc')}
+    if len(runs)!=1:raise RuntimeError(f'{model} base snapshot has {len(runs)} run identities: {sorted(runs)}')
+    return datetime.fromisoformat(next(iter(runs))).astimezone(timezone.utc)
+
+def cycle_horizon(model,base):
+    if model in ('ICON-D2','ICON-D2-EPS'): return 48
+    if model=='ICON-EU': return 120 if base.hour in (0,6,12,18) else 51
+    if model=='ECMWF-IFS': return 120 if base.hour in (0,12) else 90
+    return 120
+
+def leads_for_cycle(model,base):
+    limit=cycle_horizon(model,base)
+    return [lead for lead in TARGET_LEADS if lead<=limit]
+
+def grib_run_time(path):
+    q=subprocess.run(['grib_get','-w','shortName=10u','-p','dataDate,dataTime',str(path)],capture_output=True,text=True,check=True)
+    for line in q.stdout.splitlines():
+        parts=line.strip().split()
+        if len(parts)>=2 and parts[0].isdigit() and parts[1].isdigit():
+            return datetime.strptime(parts[0]+parts[1].zfill(4),'%Y%m%d%H%M').replace(tzinfo=timezone.utc)
+    raise RuntimeError(f'cannot parse ECMWF GRIB run time: {q.stdout[:300]!r}')
 
 
 def gfs_url(base,lead,gefs=False):
@@ -54,7 +74,7 @@ def gfs_url(base,lead,gefs=False):
 def fetch_noaa(data,model,gefs=False):
     base=cycle_from_existing(data,model);out=[]
     with tempfile.TemporaryDirectory() as td:
-        for lead in TARGET_LEADS:
+        for lead in leads_for_cycle(model,base):
             url=gfs_url(base,lead,gefs);r=S.get(url,timeout=90);r.raise_for_status()
             if r.content[:4]!=b'GRIB':raise RuntimeError(f'{model} lead {lead}: non-GRIB response')
             p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);vals={}
@@ -71,15 +91,27 @@ def fetch_noaa(data,model,gefs=False):
 
 def fetch_ifs(data):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
+    client=Client(source='ecmwf',model='ifs',resol='0p25')
     with tempfile.TemporaryDirectory() as td:
-        for lead in TARGET_LEADS:
-            p=Path(td)/f'ifs_{lead}.grib2';Client(source='ecmwf',model='ifs',resol='0p25').retrieve(stream='oper',type='fc',step=lead,param=['10u','10v','10fg','tp','mucape'],target=str(p));vals={}
+        for lead in leads_for_cycle('ECMWF-IFS',base):
+            p=Path(td)/f'ifs_{lead}.grib2'
+            result=client.retrieve(
+                date=base.strftime('%Y%m%d'),time=base.hour,stream='oper',type='fc',
+                step=lead,param=['10u','10v','10fg','tp','mucape'],target=str(p))
+            actual=grib_run_time(p)
+            if actual!=base:
+                raise RuntimeError(f'ECMWF run identity mismatch lead={lead}: expected {base.isoformat()} got {actual.isoformat()}')
+            vals={}
             for n,s,v in nearest(p):vals.setdefault(n,[]).append({'stepRange':s,'value':v})
             def one(*ns):
                 for n in ns:
                     if vals.get(n):return vals[n][0]['value']
                 return None
-            u=one('10u');v=one('10v');g=one('10fg','10fg3');rec={'model':'ECMWF-IFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'ECMWF Open Data raw GRIB2','values':vals}
+            u=one('10u');v=one('10v');g=one('10fg','10fg3','10fg6')
+            rec={'model':'ECMWF-IFS','run_time_utc':actual.isoformat(),'forecast_lead_hours':lead,
+                 'valid_time_utc':(actual+timedelta(hours=lead)).isoformat(),
+                 'source':'ECMWF Open Data raw GRIB2','values':vals,
+                 'source_request':{'date':base.strftime('%Y%m%d'),'time':base.hour,'step':lead}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
     return out
@@ -92,7 +124,7 @@ def dwd_files(base,param):
 def fetch_icon_eu(data):
     base=cycle_from_existing(data,'ICON-EU');cycle=base.strftime('%Y%m%d%H');out=[];cache={}
     with tempfile.TemporaryDirectory() as td:
-        for lead in TARGET_LEADS:
+        for lead in leads_for_cycle('ICON-EU',base):
             vals={};urls=[]
             for param in ['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']:
                 if param not in cache:cache[param]=dwd_files(base,param)
@@ -110,19 +142,31 @@ def fetch_icon_eu(data):
     return out
 
 
-def expected_leads(model):
-    horizon=EXPECTED.get(model,48)
-    if horizon<=48:return list(range(0,49,3))
-    return list(range(0,73,3))+list(range(78,horizon+1,6))
+def expected_leads(model,recs):
+    if not recs:return []
+    base=datetime.fromisoformat(recs[0]['run_time_utc']).astimezone(timezone.utc)
+    horizon=cycle_horizon(model,base)
+    if horizon<=48:return list(range(0,horizon+1,3))
+    return list(range(0,min(72,horizon)+1,3))+list(range(78,horizon+1,6))
 
 
 def quality(data):
     q=data.setdefault('quality',{});successful=[]
     for model,recs in data.get('models',{}).items():
-        exp=expected_leads(model);got={int(r['forecast_lead_hours']) for r in recs if r.get('derived') and r.get('forecast_lead_hours') is not None};complete=all(h in got for h in exp)
-        q[model]={'records':len(recs),'derived_records':sum(bool(r.get('derived')) for r in recs),'success':complete,'complete_requested_horizon':complete,'expected_horizon_hours':EXPECTED.get(model,48),'max_derived_lead_hours':max(got) if got else None,'expected_lead_count':len(exp)}
+        exp=expected_leads(model,recs)
+        got={int(r['forecast_lead_hours']) for r in recs if r.get('derived') and r.get('forecast_lead_hours') is not None}
+        complete=bool(exp) and all(h in got for h in exp)
+        horizon=max(exp) if exp else None
+        q[model]={'records':len(recs),'derived_records':sum(bool(r.get('derived')) for r in recs),
+                  'success':complete,'complete_requested_horizon':complete,
+                  'expected_horizon_hours':horizon,'max_derived_lead_hours':max(got) if got else None,
+                  'expected_lead_count':len(exp)}
         if complete:successful.append(model)
-    independent=[m for m in successful if m!='GEFS-control'];q['successful_models']=successful;q['minimum_two_independent_models_met']=len(independent)>=2;q['horizon_policy']='model_specific_medium_range_v2';q['operational_max_horizon_hours']=72;q['synoptic_guidance_max_horizon_hours']=120
+    independent=[m for m in successful if m!='GEFS-control']
+    q['successful_models']=successful
+    q['minimum_two_independent_models_met']=len({('GFS' if m in ('GFS','GEFS-control') else 'DWD-ICON' if m.startswith('ICON-') else m) for m in independent})>=2
+    q['horizon_policy']='provider_cycle_specific_medium_range_v3'
+    q['operational_max_horizon_hours']=72;q['synoptic_guidance_max_horizon_hours']=120
 
 
 def main():
