@@ -90,7 +90,7 @@ def fetch_noaa(data,model,gefs=False):
 
 
 def step_end(step_range):
-    nums=re.findall(r'\\d+',str(step_range))
+    nums=re.findall(r'\d+',str(step_range))
     return int(nums[-1]) if nums else None
 
 def fetch_ifs(data):
