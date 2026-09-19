@@ -16,6 +16,7 @@ from ecmwf.opendata import Client
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
 EXPECTED={'ICON-D2':48,'ICON-D2-EPS':48,'ICON-EU':120,'ECMWF-IFS':120,'GFS':120,'GEFS-control':120}
+ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','aws')
 S=requests.Session();S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 
@@ -96,7 +97,7 @@ def step_end(step_range):
 def fetch_ifs(data):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
     leads=leads_for_cycle('ECMWF-IFS',base)
-    client=Client(source='ecmwf',model='ifs',resol='0p25')
+    client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
     with tempfile.TemporaryDirectory() as td:
         p=Path(td)/'ifs_medium_range_batch.grib2'
         client.retrieve(
@@ -119,7 +120,7 @@ def fetch_ifs(data):
             u=one('10u');v=one('10v');g=one('10fg','10fg3','10fg6')
             rec={'model':'ECMWF-IFS','run_time_utc':actual.isoformat(),'forecast_lead_hours':lead,
                  'valid_time_utc':(actual+timedelta(hours=lead)).isoformat(),
-                 'source':'ECMWF Open Data raw GRIB2','values':vals,
+                 'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,
                  'source_request':{'date':base.strftime('%Y%m%d'),'time':base.hour,'steps':leads}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
