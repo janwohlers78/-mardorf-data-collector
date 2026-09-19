@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'config/integrity_policy.json'
       - '.github/workflows/collect-models.yml'
   schedule:
     - cron: '35 0,3,6,9,12,15,18,21 * * *'
@@ -43,6 +44,7 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
       - name: Fetch ICON-D2 and GFS
+        continue-on-error: true
         run: |
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_model_data.py --test
@@ -50,6 +52,7 @@ jobs:
             python src/fetch_model_data.py
           fi
       - name: Fetch ECMWF-IFS and GEFS-control
+        continue-on-error: true
         run: |
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_extra_models.py --test
@@ -57,6 +60,7 @@ jobs:
             python src/fetch_extra_models.py
           fi
       - name: Fetch ICON-EU and ICON-D2-EPS
+        continue-on-error: true
         run: |
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
             python src/fetch_dwd_additional_models.py --test
@@ -65,18 +69,31 @@ jobs:
           fi
       - name: Extend eligible medium-range paths
         if: github.event_name != 'push' && inputs.test_mode != true
+        continue-on-error: true
         run: python src/extend_model_horizon.py
-      - name: Validate ephemeral bundle
+      - name: Audit every model source, lead, timestamp and required field
+        if: always()
         run: |
-          python -m json.tool work/model_snapshot.json >/dev/null
+          python src/audit_integrity.py             --kind models             --input work/model_snapshot.json             --json-out work/model_integrity.json             --md-out work/model_integrity.md
+      - name: Publish detailed integrity report in Actions summary
+        if: always()
+        run: cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Transfer payload and integrity history to private repository
+        if: always() && github.event_name != 'push' && inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
+        shell: bash
+        run: |
+          args=(--kind models --integrity-json work/model_integrity.json --integrity-md work/model_integrity.md)
+          if [ -f work/model_snapshot.json ]; then
+            args+=(--file work/model_snapshot.json)
+          fi
+          python src/push_private.py "${args[@]}"
+      - name: Fail workflow when granular integrity audit found errors
+        if: always()
+        run: |
           python - <<'PY'
           import json
-          d=json.load(open('work/model_snapshot.json'))
-          assert d.get('models'),d
-          assert set(d['models']) >= {'ICON-D2','GFS','ECMWF-IFS','GEFS-control','ICON-EU','ICON-D2-EPS'},d['models'].keys()
-          assert d.get('retrieved_at_utc'),d
-          print({'models':{k:len(v) for k,v in d['models'].items()},'quality':d.get('quality')})
+          d=json.load(open('work/model_integrity.json'))
+          print('integrity_status=',d['status'],'errors=',d['error_count'],'warnings=',d['warning_count'])
+          if d['error_count']:
+              raise SystemExit(1)
           PY
-      - name: Transfer bundle to private repository
-        if: github.event_name != 'push' && inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
-        run: python src/push_private.py --kind models --file work/model_snapshot.json
