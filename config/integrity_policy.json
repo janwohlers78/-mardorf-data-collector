@@ -245,6 +245,8 @@
     "maximum_current_state_age_minutes": 60,
     "archive_expected_cadence_minutes": 5,
     "routine_history_hours": 8,
-    "maximum_timestamp_future_tolerance_minutes": 5
+    "maximum_timestamp_future_tolerance_minutes": 5,
+    "archive_edge_tolerance_minutes": 10,
+    "archive_internal_gap_warning_minutes": 5.1
   }
 }
