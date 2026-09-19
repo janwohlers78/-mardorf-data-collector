@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Transfer collector payload and detailed integrity reports into the private repo.
+"""Atomically transfer one collector attempt into the private repository.
 
-No collected payload or report is persisted in the public repository. Timestamped
-objects are immutable; latest pointers are explicit overwrite-only convenience
-copies for private technical reporting.
+One collector run creates at most one private commit containing the optional
+gzip payload, immutable JSON/Markdown integrity reports and latest pointers.
 """
 from __future__ import annotations
 import argparse,base64,gzip,hashlib,json,os,time
@@ -18,48 +17,72 @@ def parse_time(value):
     if not value:return datetime.now(timezone.utc)
     return datetime.fromisoformat(str(value).replace("Z","+00:00")).astimezone(timezone.utc)
 
-def headers(token):
+def hdr(token):
     return {
         "Authorization":f"Bearer {token}",
         "Accept":"application/vnd.github+json",
         "X-GitHub-Api-Version":"2022-11-28",
-        "User-Agent":"mardorf-data-collector/1.1",
+        "User-Agent":"mardorf-data-collector/1.2",
     }
 
-def existing(repo,path,h):
+def req(method,url,h,**kwargs):
+    r=requests.request(method,url,headers=h,timeout=60,**kwargs)
+    if not r.ok:
+        raise RuntimeError(f"{method} {url} -> HTTP {r.status_code}: {r.text[:800]}")
+    return r.json() if r.content else {}
+
+def content_meta(repo,path,h):
     r=requests.get(f"{API}/repos/{repo}/contents/{path}",headers=h,timeout=30)
     if r.status_code==404:return None
-    r.raise_for_status()
+    if not r.ok:raise RuntimeError(f"GET content {path} -> HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
-def put(repo,path,content,message,h,overwrite=False,idempotent_compare=None):
-    meta=existing(repo,path,h)
-    if meta and not overwrite:
-        if idempotent_compare is not None:
-            blob=requests.get(meta["download_url"],timeout=30).content
-            if idempotent_compare(blob):
-                return {"path":path,"idempotent":True,"commit_sha":None}
+def same_existing(repo,path,content,h,gz=False):
+    meta=content_meta(repo,path,h)
+    if not meta:return False
+    blob=requests.get(meta["download_url"],timeout=30).content
+    try:existing=gzip.decompress(blob) if gz else blob
+    except Exception:return False
+    target=gzip.decompress(content) if gz else content
+    if existing!=target:
         raise RuntimeError(f"immutable destination already exists with different content: {path}")
-    body={
-        "message":message,
-        "content":base64.b64encode(content).decode("ascii"),
-        "branch":"main",
-    }
-    if meta:body["sha"]=meta["sha"]
+    return True
+
+def blob(repo,content,h):
+    d=req("POST",f"{API}/repos/{repo}/git/blobs",h,json={
+        "content":base64.b64encode(content).decode("ascii"),"encoding":"base64"})
+    return d["sha"]
+
+def atomic_commit(repo,files,message,h):
+    # Immutable entries may already exist after an earlier successful retry.
+    pending=[]
+    for item in files:
+        if item.get("immutable") and same_existing(repo,item["path"],item["content"],h,item.get("gzip",False)):
+            continue
+        pending.append(item)
+    if not pending:return {"idempotent":True,"commit_sha":None,"paths":[x["path"] for x in files]}
+
+    blob_shas={x["path"]:blob(repo,x["content"],h) for x in pending}
     last=None
     for attempt in range(4):
-        r=requests.put(f"{API}/repos/{repo}/contents/{path}",headers=h,json=body,timeout=60)
-        if r.status_code in (200,201):
-            data=r.json()
-            return {"path":path,"idempotent":False,"commit_sha":(data.get("commit") or {}).get("sha")}
-        last=f"{r.status_code}: {r.text[:800]}"
-        if r.status_code in (409,429,500,502,503,504):
-            time.sleep(2**attempt)
-            meta=existing(repo,path,h)
-            if meta and overwrite:body["sha"]=meta["sha"]
-            continue
-        break
-    raise RuntimeError(f"private repository write failed for {path}: {last}")
+        try:
+            ref=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
+            parent=ref["object"]["sha"]
+            commit=req("GET",f"{API}/repos/{repo}/git/commits/{parent}",h)
+            tree_entries=[{"path":x["path"],"mode":"100644","type":"blob","sha":blob_shas[x["path"]]} for x in pending]
+            tree=req("POST",f"{API}/repos/{repo}/git/trees",h,json={
+                "base_tree":commit["tree"]["sha"],"tree":tree_entries})
+            new_commit=req("POST",f"{API}/repos/{repo}/git/commits",h,json={
+                "message":message,"tree":tree["sha"],"parents":[parent]})
+            r=requests.patch(f"{API}/repos/{repo}/git/refs/heads/main",headers=h,timeout=60,
+                             json={"sha":new_commit["sha"],"force":False})
+            if r.ok:
+                return {"idempotent":False,"commit_sha":new_commit["sha"],"paths":[x["path"] for x in pending]}
+            last=f"PATCH ref -> HTTP {r.status_code}: {r.text[:800]}"
+        except Exception as e:
+            last=f"{type(e).__name__}: {e}"
+        time.sleep(2**attempt)
+    raise RuntimeError(f"atomic private transfer failed after retries: {last}")
 
 def main():
     ap=argparse.ArgumentParser()
@@ -71,42 +94,31 @@ def main():
 
     token=os.getenv("PRIVATE_REPO_TOKEN")
     if not token:raise RuntimeError("PRIVATE_REPO_TOKEN is not configured")
-    repo=os.getenv("PRIVATE_REPO",DEFAULT_REPO);h=headers(token)
+    repo=os.getenv("PRIVATE_REPO",DEFAULT_REPO);h=hdr(token)
 
-    report_raw=Path(args.integrity_json).read_bytes()
-    report=json.loads(report_raw)
-    when=parse_time(report.get("generated_at_utc"))
-    stamp=when.strftime("%Y%m%dT%H%M%SZ")
-    day=f"{when:%Y/%m/%d}"
+    report=json.loads(Path(args.integrity_json).read_text(encoding="utf-8"))
+    when=parse_time(report.get("generated_at_utc"));stamp=when.strftime("%Y%m%dT%H%M%SZ");day=f"{when:%Y/%m/%d}"
     md_raw=Path(args.integrity_md).read_bytes()
-    writes=[]
+    files=[]
 
     if args.file and Path(args.file).exists():
-        raw=Path(args.file).read_bytes()
-        packed=gzip.compress(raw,compresslevel=9,mtime=0)
-        bundle_dest=f"data/inbox/public_collector/{args.kind}/{day}/{args.kind}_{stamp}.json.gz"
-        writes.append(put(
-            repo,bundle_dest,packed,f"collector: ingest {args.kind} payload {stamp}",h,False,
-            lambda blob:gzip.decompress(blob)==raw
-        ))
+        raw=Path(args.file).read_bytes();packed=gzip.compress(raw,compresslevel=9,mtime=0)
+        dest=f"data/inbox/public_collector/{args.kind}/{day}/{args.kind}_{stamp}.json.gz"
         report["private_payload"]={
-            "destination":bundle_dest,
-            "source_sha256":hashlib.sha256(raw).hexdigest(),
-            "source_bytes":len(raw),
-            "compressed_bytes":len(packed),
-        }
-        report_raw=(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+            "destination":dest,"source_sha256":hashlib.sha256(raw).hexdigest(),
+            "source_bytes":len(raw),"compressed_bytes":len(packed)}
+        files.append({"path":dest,"content":packed,"immutable":True,"gzip":True})
 
-    json_immutable=f"data/inbox/public_collector/integrity/{args.kind}/{day}/integrity_{stamp}.json"
-    md_immutable=f"reports/collector-health/{args.kind}/{day}/integrity_{stamp}.md"
-    json_latest=f"data/inbox/public_collector/integrity/{args.kind}/latest.json"
-    md_latest=f"reports/collector-health/{args.kind}/latest.md"
-
-    writes.append(put(repo,json_immutable,report_raw,f"collector: record {args.kind} integrity {stamp}",h,False,lambda b:b==report_raw))
-    writes.append(put(repo,md_immutable,md_raw,f"collector: record {args.kind} health report {stamp}",h,False,lambda b:b==md_raw))
-    writes.append(put(repo,json_latest,report_raw,f"collector: update {args.kind} integrity latest",h,True))
-    writes.append(put(repo,md_latest,md_raw,f"collector: update {args.kind} health latest",h,True))
-    print(json.dumps({"kind":args.kind,"stamp":stamp,"writes":writes},indent=2))
+    report_raw=(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+    files += [
+        {"path":f"data/inbox/public_collector/integrity/{args.kind}/{day}/integrity_{stamp}.json","content":report_raw,"immutable":True},
+        {"path":f"reports/collector-health/{args.kind}/{day}/integrity_{stamp}.md","content":md_raw,"immutable":True},
+        {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest.json","content":report_raw,"immutable":False},
+        {"path":f"reports/collector-health/{args.kind}/latest.md","content":md_raw,"immutable":False},
+    ]
+    result=atomic_commit(repo,files,f"collector: ingest {args.kind} attempt {stamp}",h)
+    result.update({"kind":args.kind,"stamp":stamp})
+    print(json.dumps(result,indent=2))
 
 if __name__=="__main__":
     main()
