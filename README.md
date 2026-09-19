@@ -60,3 +60,31 @@ A successful acquisition does **not** imply that data are operationally usable.
 The private repository must independently verify timestamps, model identity,
 family independence, completeness, freshness and observation semantics before
 using any transferred bundle.
+
+
+## Integrity reporting
+
+Every acquisition is followed by `collector-integrity-v1`.
+
+For models the report identifies, per source, the selected run, exact run age,
+age limit, expected/received lead hours, exact absent or duplicate leads,
+required-field failures, timestamp inconsistencies and provider/decode exceptions.
+Provider-cycle horizon limitations are distinguished from real download failures.
+
+For SVG the report records each WeatherLink endpoint separately with HTTP status,
+request duration, response size and exception details, plus current observation
+age and exact five-minute archive-window coverage.
+
+The Markdown report is written to the GitHub Actions job summary. When private
+transfer is configured, both JSON and Markdown reports are also persisted in the
+private repository, including failed acquisition attempts.
+
+### Why code pushes use a reduced model test
+
+A code push still calls every one of the six model source paths, but only for a
+representative lead set. This is not an Actions-minutes optimization: public
+standard runners are free. It prevents a sequence of ordinary code commits from
+repeatedly downloading the same full 120-hour provider datasets and unnecessarily
+loading DWD, ECMWF and NOAA services. The scheduled three-hour production runs
+remain full acquisitions and therefore continuously exercise the complete
+operational horizon.
