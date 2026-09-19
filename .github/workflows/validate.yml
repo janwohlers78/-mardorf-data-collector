@@ -1,0 +1,34 @@
+name: Validate collector code
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/**'
+      - 'README.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile collector
+        run: python -m compileall -q src
+      - name: Verify no generated payload is tracked
+        run: |
+          test ! -e work
+          if git ls-files | grep -E '(^|/)(data|work)/.*\.(json|json\.gz)$'; then
+            echo 'Generated data must never be tracked in the public collector.'
+            exit 1
+          fi
