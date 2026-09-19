@@ -104,13 +104,21 @@ def audit_models(path,cfg,now):
                 actual=(vt-rt).total_seconds()/3600
                 if abs(actual-lead)>0.06:
                     timestamp_failures.append({"lead_hours":lead,"run_time_utc":rt.isoformat(),"valid_time_utc":vt.isoformat(),"actual_lead_hours":round(actual,3),"reason":"declared_lead_differs_from_run_to_valid_interval"})
-            if r.get("error"):source_errors.append({"lead_hours":lead,"location":"record","message":str(r["error"])})
-            if r.get("derive_error"):source_errors.append({"lead_hours":lead,"location":"derive","message":str(r["derive_error"])})
+            if r.get("error"):
+                source_errors.append({"lead_hours":lead,"location":"record","message":str(r["error"])})
+            if r.get("error_type") or r.get("error_message"):
+                source_errors.append({"lead_hours":lead,"location":"record","exception_type":r.get("error_type"),"message":r.get("error_message")})
+            if r.get("derive_error"):
+                source_errors.append({"lead_hours":lead,"location":"derive","message":str(r["derive_error"])})
+            if r.get("derive_error_type") or r.get("derive_error_message"):
+                source_errors.append({"lead_hours":lead,"location":"derive","exception_type":r.get("derive_error_type"),"message":r.get("derive_error_message")})
             vals=r.get("values")
             if isinstance(vals,dict):
                 for key,val in vals.items():
                     if isinstance(val,dict) and val.get("error"):
                         source_errors.append({"lead_hours":lead,"location":"values."+key,"message":str(val["error"])})
+                    if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
+                        source_errors.append({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")})
 
         model_qerrors=[str(x) for x in qerrors if str(x).startswith(model+":")]
         if len(run_values)==0:
