@@ -1,0 +1,105 @@
+name: One-time private transfer verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'config/private_transfer_smoke.json'
+
+permissions:
+  contents: read
+
+jobs:
+  svg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check requests
+      - name: Fetch SVG production payload
+        continue-on-error: true
+        env:
+          WEATHERLINK_API_KEY: ${{ secrets.WEATHERLINK_API_KEY }}
+          WEATHERLINK_API_SECRET: ${{ secrets.WEATHERLINK_API_SECRET }}
+        run: python src/fetch_svg_weatherlink.py
+      - name: Audit SVG payload
+        if: always()
+        run: |
+          python src/audit_integrity.py             --kind svg             --input work/svg_bundle.json             --json-out work/svg_integrity.json             --md-out work/svg_integrity.md
+          cat work/svg_integrity.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Transfer SVG attempt atomically
+        if: always()
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        shell: bash
+        run: |
+          test -n "$PRIVATE_REPO_TOKEN"
+          args=(--kind svg --integrity-json work/svg_integrity.json --integrity-md work/svg_integrity.md)
+          if [ -f work/svg_bundle.json ]; then args+=(--file work/svg_bundle.json); fi
+          python src/push_private.py "${args[@]}"
+      - name: Enforce SVG integrity
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('work/svg_integrity.json'))
+          if d['error_count']:
+              raise SystemExit(1)
+          PY
+
+  models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      COLLECTOR_MODEL_FILE: work/model_snapshot.json
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
+      - name: Fetch ICON-D2 and GFS full production horizon
+        continue-on-error: true
+        run: python src/fetch_model_data.py
+      - name: Fetch ECMWF-IFS and GEFS full production horizon
+        continue-on-error: true
+        run: python src/fetch_extra_models.py
+      - name: Fetch ICON-EU and ICON-D2-EPS full production horizon
+        continue-on-error: true
+        run: python src/fetch_dwd_additional_models.py
+      - name: Extend eligible medium-range models to provider cycle horizon
+        continue-on-error: true
+        run: python src/extend_model_horizon.py
+      - name: Audit full model payload
+        if: always()
+        run: |
+          python src/audit_integrity.py             --kind models             --input work/model_snapshot.json             --json-out work/model_integrity.json             --md-out work/model_integrity.md
+          cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Transfer model attempt atomically
+        if: always()
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        shell: bash
+        run: |
+          test -n "$PRIVATE_REPO_TOKEN"
+          args=(--kind models --integrity-json work/model_integrity.json --integrity-md work/model_integrity.md)
+          if [ -f work/model_snapshot.json ]; then args+=(--file work/model_snapshot.json); fi
+          python src/push_private.py "${args[@]}"
+      - name: Enforce model integrity
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('work/model_integrity.json'))
+          if d['error_count']:
+              raise SystemExit(1)
+          PY
