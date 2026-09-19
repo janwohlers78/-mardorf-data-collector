@@ -29,8 +29,6 @@ jobs:
     timeout-minutes: 35
     env:
       COLLECTOR_MODEL_FILE: work/model_snapshot.json
-      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-      PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
     steps:
       - uses: actions/checkout@v4
       - name: Install ecCodes
@@ -79,9 +77,16 @@ jobs:
         if: always()
         run: cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
       - name: Transfer payload and integrity history to private repository
-        if: always() && github.event_name != 'push' && inputs.test_mode != true && env.PRIVATE_REPO_TOKEN != ''
+        if: always() && github.event_name != 'push' && inputs.test_mode != true
         shell: bash
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
         run: |
+          if [ -z "$PRIVATE_REPO_TOKEN" ]; then
+            echo 'PRIVATE_REPO_TOKEN is not configured; private transfer skipped.'
+            exit 0
+          fi
           args=(--kind models --integrity-json work/model_integrity.json --integrity-md work/model_integrity.md)
           if [ -f work/model_snapshot.json ]; then
             args+=(--file work/model_snapshot.json)
