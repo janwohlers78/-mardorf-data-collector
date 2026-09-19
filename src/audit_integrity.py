@@ -254,6 +254,17 @@ def audit_svg(path,cfg,now):
         if diff>cadence+0.1:
             gaps.append({"after_utc":a.isoformat(),"before_utc":b.isoformat(),"gap_minutes":round(diff,2),
                          "estimated_missing_five_minute_intervals":max(0,int(round(diff/cadence))-1)})
+
+    requested=d.get("requested_history_window") or {}
+    requested_start=dt(requested.get("start_utc"));requested_end=dt(requested.get("end_utc"))
+    expected_slots=None;start_gap=None;end_gap=None;coverage_ratio=None
+    if requested_start and requested_end and requested_end>requested_start:
+        expected_slots=max(1,int((requested_end-requested_start).total_seconds()//(cadence*60)))
+        if times:
+            start_gap=max(0.0,(times[0]-requested_start).total_seconds()/60)
+            end_gap=max(0.0,(requested_end-times[-1]).total_seconds()/60)
+            coverage_ratio=min(1.0,len(times)/expected_slots) if expected_slots else None
+
     if not rows:
         issues.append(issue("SVG_HISTORIC_WINDOW_RETURNED_ZERO_RECORDS","ERROR","SVG-42374","historic_window",
             "The routine WeatherLink history request returned no normalized archive records.",
@@ -266,6 +277,17 @@ def audit_svg(path,cfg,now):
             "The recent archive has gaps larger than the expected five-minute cadence; affected intervals are explicit.",
             expected_cadence_minutes=cadence,gaps=gaps,
             total_estimated_missing_intervals=sum(x["estimated_missing_five_minute_intervals"] for x in gaps)))
+    edge_tol=float(cfg["svg_policy"]["archive_edge_tolerance_minutes"])
+    if start_gap is not None and start_gap>edge_tol:
+        issues.append(issue("SVG_HISTORIC_WINDOW_START_NOT_COVERED","WARN","SVG-42374","historic_window",
+            "The first returned archive record begins later than the requested history window.",
+            requested_start_utc=requested_start.isoformat(),first_record_utc=times[0].isoformat(),
+            uncovered_start_minutes=round(start_gap,2),allowed_edge_tolerance_minutes=edge_tol))
+    if end_gap is not None and end_gap>edge_tol:
+        issues.append(issue("SVG_HISTORIC_WINDOW_END_NOT_COVERED","WARN","SVG-42374","historic_window",
+            "The last returned archive record ends too far before the requested history-window end.",
+            requested_end_utc=requested_end.isoformat(),last_record_utc=times[-1].isoformat(),
+            uncovered_end_minutes=round(end_gap,2),allowed_edge_tolerance_minutes=edge_tol))
 
     current_req_ok=bool((reqs.get("current") or {}).get("success"))
     historic_req_ok=bool((reqs.get("historic") or {}).get("success"))
@@ -282,6 +304,13 @@ def audit_svg(path,cfg,now):
         "historic_last_time_utc":times[-1].isoformat() if times else None,
         "expected_archive_cadence_minutes":cadence,"historic_gap_count":len(gaps),"historic_gaps":gaps,
         "duplicate_historic_record_count":duplicates,
+        "requested_history_start_utc":requested_start.isoformat() if requested_start else None,
+        "requested_history_end_utc":requested_end.isoformat() if requested_end else None,
+        "expected_five_minute_intervals":expected_slots,
+        "observed_unique_intervals":len(times),
+        "coverage_ratio_of_requested_interval_count":round(coverage_ratio,4) if coverage_ratio is not None else None,
+        "uncovered_start_minutes":round(start_gap,2) if start_gap is not None else None,
+        "uncovered_end_minutes":round(end_gap,2) if end_gap is not None else None,
     }
     return make_report("svg",now,sources,issues,usable,{
         "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc")
@@ -309,8 +338,10 @@ def markdown(report):
             "- Current observation UTC: "+str(x.get("current_observation_time_utc")),
             "- Observation age: %s min; fresh target %s min; maximum current-state age %s min."%(
                 x.get("current_observation_age_minutes"),x.get("fresh_target_minutes"),x.get("maximum_current_state_age_minutes")),
-            "- Historic records: %s; unique timestamps: %s; cadence gaps: %s."%(
-                x.get("historic_record_count"),x.get("historic_unique_timestamp_count"),x.get("historic_gap_count")),""
+            "- Historic records: %s; unique timestamps: %s; expected five-minute intervals: %s; coverage ratio: %s."%(
+                x.get("historic_record_count"),x.get("historic_unique_timestamp_count"),x.get("expected_five_minute_intervals"),x.get("coverage_ratio_of_requested_interval_count")),
+            "- Window edges not covered: start %s min; end %s min; internal cadence gaps: %s."%(
+                x.get("uncovered_start_minutes"),x.get("uncovered_end_minutes"),x.get("historic_gap_count")),""
         ]
     lines += ["## Exact diagnostics",""]
     if not report["issues"]:lines.append("- No integrity deviations recorded.")
