@@ -33,22 +33,34 @@ def grib_run_time(path):
    return datetime.strptime(parts[0]+parts[1].zfill(4),'%Y%m%d%H%M').replace(tzinfo=timezone.utc)
  raise RuntimeError(f'Cannot parse ECMWF GRIB run time: {q.stdout[:300]!r}')
 
+def step_end(step_range):
+ import re
+ nums=re.findall(r'\\d+',str(step_range))
+ return int(nums[-1]) if nums else None
+
 def fetch_ifs(leads):
  out=[]
  with tempfile.TemporaryDirectory() as td:
+  target=Path(td)/'ifs_batch.grib2'
+  client=Client(source='ecmwf',model='ifs',resol='0p25')
+  result=client.retrieve(stream='oper',type='fc',step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(target))
+  run=grib_run_time(target); bylead={int(x):{} for x in leads}
+  for n,s,v in nearest(target):
+   lead=step_end(s)
+   if lead not in bylead: continue
+   bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
   for lead in leads:
-   target=Path(td)/f'ifs_{lead}.grib2'
-   c=Client(source='ecmwf',model='ifs',resol='0p25')
-   c.retrieve(stream='oper',type='fc',step=lead,param=['10u','10v','10fg','tp','mucape'],target=str(target))
-   rows=nearest(target); vals={}
-   for n,s,v in rows: vals.setdefault(n,[]).append({'stepRange':s,'value':v})
+   vals=bylead[int(lead)]
    def one(*names):
     for n in names:
      if n in vals and vals[n]: return vals[n][0]['value']
     return None
-   u=one('10u'); v=one('10v'); g=one('10fg','10fg3'); run=grib_run_time(target)
-   rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),'source':'ECMWF Open Data raw GRIB2','values':vals}
-   if u is not None and v is not None: rec['derived']=derived(u,v,g)
+   u=one('10u');v=one('10v');g=one('10fg','10fg3','10fg6')
+   rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,
+        'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),
+        'source':'ECMWF Open Data raw GRIB2','values':vals,
+        'source_request':{'steps':leads,'retrieved_run_time_utc':run.isoformat()}}
+   if u is not None and v is not None:rec['derived']=derived(u,v,g)
    out.append(rec)
  return out
 
