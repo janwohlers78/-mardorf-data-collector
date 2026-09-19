@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "method_version": "collector-integrity-v1",
+  "method_version": "collector-integrity-v1.1",
   "model_policy": {
     "spot": {
       "latitude": 52.4942,
@@ -237,7 +237,16 @@
       "GEFS-control"
     ],
     "retrieval_timestamp_future_tolerance_minutes": 15,
-    "run_timestamp_future_tolerance_minutes": 90
+    "run_timestamp_future_tolerance_minutes": 90,
+    "optional_weather_context_fields": [
+      "tot_prec",
+      "cape_ml",
+      "tp",
+      "mucape",
+      "APCP",
+      "cape",
+      "precipitation"
+    ]
   },
   "svg_policy": {
     "station_id": 42374,
