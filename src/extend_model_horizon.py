@@ -131,6 +131,6 @@ def main():
     for model,fn in jobs:
         try:data['models'][model]=[r for r in data['models'].get(model,[]) if int(r.get('forecast_lead_hours',999))<=48]+fn()
         except Exception as e:errors.append(f'{model}: {type(e).__name__}: {e}')
-    data['leads_hours']=sorted(set(list(range(0,73,3))+list(range(78,121,6)));data['horizon_extension_retrieved_at_utc']=datetime.now(timezone.utc).isoformat();data['retrieved_at_utc']=data['horizon_extension_retrieved_at_utc'];data.setdefault('quality',{}).setdefault('errors',[]);data['quality']['errors']+=errors;quality(data);SNAP.write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')
+    data['leads_hours']=sorted(set(list(range(0,73,3))+list(range(78,121,6))));data['horizon_extension_retrieved_at_utc']=datetime.now(timezone.utc).isoformat();data['retrieved_at_utc']=data['horizon_extension_retrieved_at_utc'];data.setdefault('quality',{}).setdefault('errors',[]);data['quality']['errors']+=errors;quality(data);SNAP.write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')
     print(json.dumps({'errors':errors,'quality':data['quality'],'output_bytes':SNAP.stat().st_size},indent=2))
 if __name__=='__main__':main()
