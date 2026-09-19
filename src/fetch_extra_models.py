@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 import requests
 from ecmwf.opendata import Client
 LAT=52.4942; LON=9.3418
+ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','aws')
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 def nearest(path):
@@ -42,7 +43,7 @@ def fetch_ifs(leads):
  out=[]
  with tempfile.TemporaryDirectory() as td:
   target=Path(td)/'ifs_batch.grib2'
-  client=Client(source='ecmwf',model='ifs',resol='0p25')
+  client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
   result=client.retrieve(stream='oper',type='fc',step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(target))
   run=grib_run_time(target); bylead={int(x):{} for x in leads}
   for n,s,v in nearest(target):
@@ -58,7 +59,7 @@ def fetch_ifs(leads):
    u=one('10u');v=one('10v');g=one('10fg','10fg3','10fg6')
    rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,
         'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),
-        'source':'ECMWF Open Data raw GRIB2','values':vals,
+        'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,
         'source_request':{'steps':leads,'retrieved_run_time_utc':run.isoformat()}}
    if u is not None and v is not None:rec['derived']=derived(u,v,g)
    out.append(rec)
