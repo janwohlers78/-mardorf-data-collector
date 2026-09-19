@@ -94,7 +94,7 @@ def fetch_icon(leads):
                     if len(rows)>1:
                         rec['values'][param+'_all_messages']=rows
                 except Exception as e:
-                    rec['values'][param]={'error':str(e)}
+                    rec['values'][param]={'error_type':type(e).__name__,'error_message':str(e),'source_url':url}
             out.append(rec)
     return out
 
@@ -141,7 +141,7 @@ def fetch_gfs(leads):
                 for row in grib_nearest(p):
                     rec['values'].setdefault(row['shortName'],[]).append(row)
             except Exception as e:
-                rec['error']=str(e)
+                rec['error_type']=type(e).__name__; rec['error_message']=str(e)
             out.append(rec)
     return out
 
@@ -161,7 +161,7 @@ def derive(records):
             sp=math.hypot(u,v); direction=(270-math.degrees(math.atan2(v,u)))%360
             r['derived']={'wind_speed_ms':round(sp,3),'wind_speed_kt':round(sp*1.943844,2),'wind_direction_deg':round(direction,1),'gust_ms':round(gust,3),'gust_kt':round(gust*1.943844,2),'gust_factor':round(gust/sp,2) if sp>0.2 else None}
         except Exception as e:
-            r['derive_error']=str(e)
+            r['derive_error_type']=type(e).__name__; r['derive_error_message']=str(e)
     return records
 
 
@@ -175,7 +175,7 @@ def main():
         try:
             result['models'][name]=derive(fn(leads))
         except Exception as e:
-            result['models'][name]=[]; errors.append(f'{name}: {e}')
+            result['models'][name]=[]; errors.append(f'{name}: {type(e).__name__}: {e}')
     successful=[]
     for name,recs in result['models'].items():
         good=sum(1 for x in recs if 'derived' in x)
