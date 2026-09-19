@@ -364,7 +364,11 @@ def main():
     jp=Path(args.json_out);mp=Path(args.md_out);jp.parent.mkdir(parents=True,exist_ok=True);mp.parent.mkdir(parents=True,exist_ok=True)
     jp.write_text(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n",encoding="utf-8")
     mp.write_text(markdown(report),encoding="utf-8")
-    print(json.dumps({"status":report["status"],"errors":report["error_count"],"warnings":report["warning_count"],"ready":report["bundle_ready_for_private_revalidation"]}))
+    print(json.dumps({
+        "status":report["status"],"errors":report["error_count"],"warnings":report["warning_count"],
+        "ready":report["bundle_ready_for_private_revalidation"],
+        "issues":[{"severity":x["severity"],"code":x["code"],"source":x["source"],"scope":x["scope"],"details":x["details"]} for x in report["issues"]]
+    },ensure_ascii=False))
 
 if __name__=="__main__":
     main()
