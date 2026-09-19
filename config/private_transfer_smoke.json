@@ -1,9 +1,14 @@
 {
-  "requested_at_utc": "2026-09-19T20:47:00Z",
-  "purpose": "one_time_cross_repository_transfer_verification",
+  "requested_at_utc": "2026-09-19T20:59:00Z",
+  "purpose": "repeat_cross_repository_transfer_after_horizon_integrity_fix",
   "expected_jobs": [
     "svg",
     "models"
   ],
-  "private_target": "janwohlers78/mardorf-kitevorhersage"
+  "private_target": "janwohlers78/mardorf-kitevorhersage",
+  "fixes_under_test": [
+    "provider_cycle_specific_icon_eu_horizon",
+    "ecmwf_date_time_cycle_pinning",
+    "optional_weather_context_not_wind_critical"
+  ]
 }
