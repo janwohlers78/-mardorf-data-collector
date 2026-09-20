@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlencode,urljoin
 import requests
 from ecmwf.opendata import Client
-from grib_identity import assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
+from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
@@ -91,8 +91,9 @@ def fetch_noaa(data,model,gefs=False):
 
 
 def step_end(step_range):
-    nums=re.findall(r'\d+',str(step_range))
-    return int(nums[-1]) if nums else None
+    value=_step_end_hours(step_range)
+    if value is None or abs(value-round(value))>1e-9:return None
+    return int(round(value))
 
 def fetch_ifs(data):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
