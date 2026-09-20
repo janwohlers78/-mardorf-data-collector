@@ -191,22 +191,25 @@ def fetch_icon_d2_eps(leads):
     hourly=payload.get('hourly') or {};times=hourly.get('time') or []
     speed=member_map(hourly,'wind_speed_10m');direction=member_map(hourly,'wind_direction_10m')
     gust=member_map(hourly,'wind_gusts_10m');precip=member_map(hourly,'precipitation');cape=member_map(hourly,'cape')
-    member_ids=sorted(set(speed)&set(direction))
+    # Wind speed, direction and gust are the wind-critical trajectory. A member
+    # is not complete merely because speed/direction exist.
+    member_ids=sorted(set(speed)&set(direction)&set(gust))
     expected_ids=list(range(EPS_EXPECTED_MEMBERS))
     if member_ids!=expected_ids:
-        raise RuntimeError(f'ICON-D2-EPS member identity mismatch: expected={expected_ids} received={member_ids}')
+        raise RuntimeError(
+            f'ICON-D2-EPS wind-core member identity mismatch: expected={expected_ids} received={member_ids}; '
+            f'speed={sorted(speed)} direction={sorted(direction)} gust={sorted(gust)}')
 
     meta_after=fetch_eps_metadata()
-    if meta_after['last_run_initialisation_time_utc']!=meta_before['last_run_initialisation_time_utc']:
-        raise RuntimeError(
-            'Open-Meteo ICON-D2-EPS run changed during acquisition: '
-            f"before={meta_before['last_run_initialisation_time_utc']} "
-            f"after={meta_after['last_run_initialisation_time_utc']}")
-    if _meta_dt(meta_after,'last_run_availability_time_utc')!=availability:
-        raise RuntimeError(
-            'Open-Meteo ICON-D2-EPS availability metadata changed during acquisition: '
-            f"before={meta_before['last_run_availability_time_utc']} "
-            f"after={meta_after['last_run_availability_time_utc']}")
+    stable_keys=(
+        'last_run_initialisation_time_utc',
+        'last_run_availability_time_utc',
+        'last_run_modification_time_utc',
+    )
+    changed={k:{'before':meta_before.get(k),'after':meta_after.get(k)}
+             for k in stable_keys if meta_before.get(k)!=meta_after.get(k)}
+    if changed:
+        raise RuntimeError(f'Open-Meteo ICON-D2-EPS run metadata changed during acquisition: {changed}')
 
     identity={
         'verification_status':'verified_stable_metadata_and_dwd_cycle',
@@ -229,10 +232,11 @@ def fetch_icon_d2_eps(leads):
             rec_error=f'valid timestamp {key} absent from Open-Meteo hourly time axis'
         else:
             for m in member_ids:
-                if i>=len(speed[m]) or i>=len(direction[m]) or speed[m][i] is None or direction[m][i] is None:
+                if (i>=len(speed[m]) or i>=len(direction[m]) or i>=len(gust[m])
+                        or speed[m][i] is None or direction[m][i] is None or gust[m][i] is None):
                     continue
-                g=gust[m][i] if m in gust and i<len(gust[m]) else None
-                d=derived_from_speed(float(speed[m][i]),float(direction[m][i]),float(g) if g is not None else None);d['member']=m
+                g=gust[m][i]
+                d=derived_from_speed(float(speed[m][i]),float(direction[m][i]),float(g));d['member']=m
                 if m in precip and i<len(precip[m]) and precip[m][i] is not None:d['precipitation']=precip[m][i]
                 if m in cape and i<len(cape[m]) and cape[m][i] is not None:d['cape']=cape[m][i]
                 members.append(d)
