@@ -442,9 +442,14 @@ def audit_skm(path,cfg,now):
         if not s.get("success") or t is None:
             required_ok=False
             related=[x for x in reqs if isinstance(x,dict) and x.get("kind")==kind]
-            issues.append(issue("SKM_REQUIRED_ENDPOINT_UNAVAILABLE","ERROR",station,kind,
-                "The optional SKM probe could not establish a parseable non-future observation for a required endpoint.",
-                endpoint=kind,endpoint_summary=s,requests=related))
+            empty_series=bool(s.get("http_requests_succeeded") and s.get("provider_returned_empty_measurement_series"))
+            code="SKM_PROVIDER_SERIES_EMPTY_DESPITE_HTTP_SUCCESS" if empty_series else "SKM_REQUIRED_ENDPOINT_UNAVAILABLE"
+            impact=("MeteoMap returned HTTP/JSON success but the station's measurement series is actually empty for all bounded source-day attempts."
+                    if empty_series else
+                    "The optional SKM probe could not establish a parseable non-future observation for a required endpoint.")
+            issues.append(issue(code,"ERROR",station,kind,impact,
+                endpoint=kind,endpoint_summary=s,requests=related,
+                classification="upstream_station_or_provider_empty_series" if empty_series else "request_or_parse_unavailable"))
             continue
         age=(now-t).total_seconds()/60
         if age < -future_tol:
