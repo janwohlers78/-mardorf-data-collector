@@ -73,7 +73,10 @@ def grib_nearest(path):
 
 def fetch_icon(leads):
     cycle=latest_dwd_icon_d2_cycle(max(leads) if leads else 0); out=[]
-    params=['u_10m','v_10m','vmax_10m','tot_prec']
+    # ICON-D2 tot_prec files bundle quarter-hour validity times offset from
+    # the nominal integer lead (e.g. +12:15/+12:30/+12:45 in the f012 file).
+    # Do not attach those values to a 3-hour record without an exact validity match.
+    params=['u_10m','v_10m','vmax_10m']
     with tempfile.TemporaryDirectory() as td:
         td=Path(td)
         for lead in leads:
