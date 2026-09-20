@@ -89,6 +89,34 @@ def find_dwd_file(model,cycle,lead,param):
     return sorted(candidates)[0]
 
 
+def verify_dwd_native_grid_parity(url,base,valid,returned):
+    """Bind the Open-Meteo extraction point to the direct DWD regular-lat-lon grid."""
+    with tempfile.TemporaryDirectory() as td:
+        r=S.get(url,timeout=90);r.raise_for_status()
+        p=Path(td)/'dwd_grid_parity.grib2'
+        p.write_bytes(bz2.decompress(r.content))
+        assert_grib_valid_time(p,base,valid,'ICON-D2-EPS native-grid parity')
+        rows=nearest(p)
+        native=rows.point
+    rlat=float(returned['latitude']);rlon=float(returned['longitude'])
+    nlat=float(native['latitude']);nlon=float(native['longitude'])
+    dlat=abs(rlat-nlat);dlon=abs(rlon-nlon)
+    # ICON-D2 regular-lat-lon spacing is ~0.02 degrees. Requiring agreement
+    # within just over half a grid interval rejects a neighbouring-cell shift.
+    tolerance=0.011
+    verified=dlat<=tolerance and dlon<=tolerance
+    return {
+        'verified':verified,
+        'method':'direct_dwd_grib_nearest_grid_point_vs_open_meteo_returned_coordinate_v1',
+        'dwd_source_url':url,
+        'dwd_native_grid_point':native,
+        'open_meteo_returned_coordinate':{'latitude':rlat,'longitude':rlon},
+        'absolute_difference_degrees':{'latitude':round(dlat,6),'longitude':round(dlon,6)},
+        'tolerance_degrees_each_axis':tolerance,
+        'valid_time_utc':valid.isoformat(),
+    }
+
+
 def fetch_icon_eu(leads,required_cycle_lead=None):
     model='icon-eu'
     requested=max(leads) if leads else 0
@@ -248,7 +276,9 @@ def _hourly_source(payload,r,meta_before,meta_after,identity,base,response_retri
         'provider_metadata_after':meta_after,
         'cycle_evidence':'stable_provider_metadata_association',
         'response_bound_run_identity_verified':False,
-        'native_grid_parity_verified':False,
+        'response_run_binding':identity['response_run_binding'],
+        'native_grid_parity_verified':bool(identity['native_grid_parity'].get('verified')),
+        'native_grid_parity_evidence':identity['native_grid_parity'],
         'run_time_utc':base.isoformat(),
         'times_utc':times,
         'columns':columns,
@@ -310,8 +340,28 @@ def fetch_icon_d2_eps_bundle(leads):
     if changed:
         raise RuntimeError(f'Open-Meteo ICON-D2-EPS run metadata changed during acquisition: {changed}')
 
+    returned={'latitude':float(payload.get('latitude')),'longitude':float(payload.get('longitude'))}
+    grid_parity=verify_dwd_native_grid_parity(
+        dwd_confirmation,base,base+timedelta(hours=farthest),returned)
+    if not grid_parity['verified']:
+        raise RuntimeError(f'ICON-D2-EPS Open-Meteo/DWD native grid parity failed: {grid_parity}')
+
+    response_hash=hashlib.sha256(
+        json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+    ).hexdigest()
+    response_run_binding={
+        'status':'strong_indirect_bracketed_not_provider_embedded',
+        'provider_response_embeds_run_time':False,
+        'response_sha256':response_hash,
+        'metadata_run_time_before_utc':meta_before['last_run_initialisation_time_utc'],
+        'metadata_run_time_after_utc':meta_after['last_run_initialisation_time_utc'],
+        'metadata_stable_across_response':True,
+        'direct_dwd_cycle_confirmation_url':dwd_confirmation,
+        'limitation':'The live Ensemble API response schema does not embed the initialization time; operational promotion remains blocked until provider-bound run identity is available.',
+    }
+
     identity={
-        'verification_status':'verified_stable_metadata_and_dwd_cycle',
+        'verification_status':'verified_stable_metadata_dwd_cycle_and_native_grid',
         'model_id':'dwd_icon_d2_eps',
         'run_time_utc':base.isoformat(),
         'metadata_before':meta_before,
@@ -319,6 +369,8 @@ def fetch_icon_d2_eps_bundle(leads):
         'settling_age_seconds_at_request':round(settle_age,1),
         'minimum_settling_seconds':EPS_SETTLING_SECONDS,
         'dwd_cycle_confirmation_url':dwd_confirmation,
+        'native_grid_parity':grid_parity,
+        'response_run_binding':response_run_binding,
         'expected_member_ids':expected_ids,
         'source_timestamp_semantics':'Open-Meteo last_run_initialisation_time is the model reference/initialisation time',
     }
