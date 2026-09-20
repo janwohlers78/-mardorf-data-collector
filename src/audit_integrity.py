@@ -144,6 +144,10 @@ def audit_models(path,cfg,now):
             required_status=str(ecfg.get("required_verification_status","verified_stable_metadata_and_dwd_cycle"))
             min_settle=float(ecfg.get("minimum_open_meteo_settling_seconds",600))
             identities=[r.get("source_run_identity") for r in recs if isinstance(r.get("source_run_identity"),dict)]
+            if len(identities)!=len(recs):
+                identity_failures.append({
+                    "reason":"source_run_identity_missing_on_some_records",
+                    "record_count":len(recs),"identity_record_count":len(identities)})
             if not identities:
                 identity_failures.append({"reason":"source_run_identity_missing","record_count":len(recs)})
             else:
@@ -182,6 +186,22 @@ def audit_models(path,cfg,now):
                                               "expected_ids":list(range(expected_members)),"recorded_ids":expected_ids})
                 if not first.get("dwd_cycle_confirmation_url"):
                     identity_failures.append({"reason":"dwd_cycle_confirmation_missing"})
+                critical_identity_keys=(
+                    "verification_status","run_time_utc","metadata_before","metadata_after",
+                    "settling_age_seconds_at_request","minimum_settling_seconds",
+                    "dwd_cycle_confirmation_url","expected_member_ids",
+                )
+                for rec in recs:
+                    ident=rec.get("source_run_identity")
+                    if not isinstance(ident,dict):
+                        continue
+                    mismatched=[k for k in critical_identity_keys if ident.get(k)!=first.get(k)]
+                    if mismatched:
+                        identity_failures.append({
+                            "reason":"source_run_identity_not_identical_across_leads",
+                            "lead_hours":rec.get("forecast_lead_hours"),
+                            "mismatched_fields":mismatched,
+                        })
             for lead,r in sorted(lead_rows.items()):
                 if lead not in expected_set:continue
                 members=r.get("members") if isinstance(r.get("members"),list) else []
@@ -189,11 +209,24 @@ def audit_models(path,cfg,now):
                 member_count_by_lead[str(lead)]=len(member_ids)
                 der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
                 stat=r.get("ensemble_statistics") if isinstance(r.get("ensemble_statistics"),dict) else {}
-                if member_ids!=list(range(expected_members)) or der.get("ensemble_member_count")!=expected_members or stat.get("member_count")!=expected_members:
+                incomplete_core_members=[]
+                for member in members:
+                    if not isinstance(member,dict):
+                        continue
+                    missing_core=[name for name in ("wind_speed_ms","wind_direction_deg","gust_ms")
+                                  if not finite(member.get(name))]
+                    if missing_core:
+                        incomplete_core_members.append({
+                            "member":member.get("member"),"missing_or_invalid_fields":missing_core})
+                if (member_ids!=list(range(expected_members))
+                        or der.get("ensemble_member_count")!=expected_members
+                        or stat.get("member_count")!=expected_members
+                        or incomplete_core_members):
                     member_failures.append({"lead_hours":lead,"expected_member_ids":list(range(expected_members)),
                                             "received_member_ids":member_ids,
                                             "derived_member_count":der.get("ensemble_member_count"),
-                                            "statistics_member_count":stat.get("member_count")})
+                                            "statistics_member_count":stat.get("member_count"),
+                                            "incomplete_wind_core_members":incomplete_core_members})
         model_qerrors=[str(x) for x in qerrors if str(x).startswith(model+":")]
         if len(run_values)==0:
             issues.append(issue("MODEL_RUN_TIME_NOT_PRESENT","ERROR",model,"run_identity",
