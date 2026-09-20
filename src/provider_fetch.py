@@ -80,7 +80,8 @@ def fetch_base(d,model,test):
     elif model=="ICON-EU":
         rows=dwd.fetch_icon_eu(leads,required_cycle_lead=None if test else 120)
     elif model=="ICON-D2-EPS":
-        rows=dwd.fetch_icon_d2_eps(leads)
+        rows,hourly_source=dwd.fetch_icon_d2_eps_bundle(leads)
+        d["ensemble_hourly_source"]=hourly_source
     else:
         raise ValueError(model)
     d["models"][model]=rows
