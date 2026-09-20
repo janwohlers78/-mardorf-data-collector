@@ -10,7 +10,7 @@ FAMILY={
     "ICON-D2":"DWD-ICON","ICON-D2-EPS":"DWD-ICON","ICON-EU":"DWD-ICON",
     "ECMWF-IFS":"ECMWF","GFS":"GFS","GEFS-control":"GFS",
 }
-POLICY_VERSION="collector-integrity-v1.1"
+POLICY_VERSION="collector-integrity-v1.2"
 
 def dt(v):
     if not v:return None
@@ -137,6 +137,51 @@ def audit_models(path,cfg,now):
                     if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
                         record_problem({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")},key)
 
+        identity_failures=[];member_failures=[]
+        if model=="ICON-D2-EPS" and recs:
+            ecfg=(cfg["model_policy"].get("ensemble_identity") or {}).get("ICON-D2-EPS") or {}
+            expected_members=int(ecfg.get("expected_member_count",20))
+            required_status=str(ecfg.get("required_verification_status","verified_stable_metadata_and_dwd_cycle"))
+            min_settle=float(ecfg.get("minimum_open_meteo_settling_seconds",600))
+            identities=[r.get("source_run_identity") for r in recs if isinstance(r.get("source_run_identity"),dict)]
+            if not identities:
+                identity_failures.append({"reason":"source_run_identity_missing","record_count":len(recs)})
+            else:
+                first=identities[0]
+                id_runs=sorted({str(x.get("run_time_utc")) for x in identities if x.get("run_time_utc")})
+                statuses=sorted({str(x.get("verification_status")) for x in identities if x.get("verification_status")})
+                if statuses!=[required_status]:
+                    identity_failures.append({"reason":"verification_status_mismatch","required":required_status,"observed":statuses})
+                if len(id_runs)!=1 or (run and dt(id_runs[0])!=run):
+                    identity_failures.append({"reason":"identity_run_time_mismatch","bundle_run_time_utc":run.isoformat() if run else None,"identity_run_times":id_runs})
+                mb=first.get("metadata_before") if isinstance(first.get("metadata_before"),dict) else {}
+                ma=first.get("metadata_after") if isinstance(first.get("metadata_after"),dict) else {}
+                before=dt(mb.get("last_run_initialisation_time_utc"));after=dt(ma.get("last_run_initialisation_time_utc"))
+                if before is None or after is None or before!=after or (run and before!=run):
+                    identity_failures.append({"reason":"metadata_before_after_run_mismatch",
+                                              "metadata_before_run_utc":before.isoformat() if before else None,
+                                              "metadata_after_run_utc":after.isoformat() if after else None,
+                                              "bundle_run_utc":run.isoformat() if run else None})
+                settle=first.get("settling_age_seconds_at_request")
+                if not finite(settle) or float(settle)<min_settle:
+                    identity_failures.append({"reason":"metadata_settling_period_not_met","observed_seconds":settle,"required_seconds":min_settle})
+                expected_ids=first.get("expected_member_ids")
+                if expected_ids!=list(range(expected_members)):
+                    identity_failures.append({"reason":"expected_member_identity_set_mismatch",
+                                              "expected_ids":list(range(expected_members)),"recorded_ids":expected_ids})
+                if not first.get("dwd_cycle_confirmation_url"):
+                    identity_failures.append({"reason":"dwd_cycle_confirmation_missing"})
+            for lead,r in sorted(lead_rows.items()):
+                if lead not in expected_set:continue
+                members=r.get("members") if isinstance(r.get("members"),list) else []
+                member_ids=sorted(m.get("member") for m in members if isinstance(m,dict) and isinstance(m.get("member"),int))
+                der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
+                stat=r.get("ensemble_statistics") if isinstance(r.get("ensemble_statistics"),dict) else {}
+                if member_ids!=list(range(expected_members)) or der.get("ensemble_member_count")!=expected_members or stat.get("member_count")!=expected_members:
+                    member_failures.append({"lead_hours":lead,"expected_member_ids":list(range(expected_members)),
+                                            "received_member_ids":member_ids,
+                                            "derived_member_count":der.get("ensemble_member_count"),
+                                            "statistics_member_count":stat.get("member_count")})
         model_qerrors=[str(x) for x in qerrors if str(x).startswith(model+":")]
         if len(run_values)==0:
             issues.append(issue("MODEL_RUN_TIME_NOT_PRESENT","ERROR",model,"run_identity",
@@ -180,6 +225,14 @@ def audit_models(path,cfg,now):
             issues.append(issue("OPTIONAL_WEATHER_CONTEXT_FIELDS_UNAVAILABLE","WARN",model,"optional_weather_context",
                 "Optional precipitation/CAPE context is incomplete at specific leads; wind-core completeness is unaffected.",
                 affected_fields=optional_source_warnings))
+        if identity_failures:
+            issues.append(issue("ENSEMBLE_RUN_IDENTITY_UNVERIFIED","ERROR",model,"run_identity",
+                "ICON-D2-EPS run identity could not be proven from stable Open-Meteo metadata plus DWD cycle confirmation.",
+                failures=identity_failures))
+        if member_failures:
+            issues.append(issue("ENSEMBLE_MEMBER_SET_INCOMPLETE","ERROR",model,"ensemble_members",
+                "ICON-D2-EPS must contain exactly the fixed 20 member identities at every required lead.",
+                affected_leads=member_failures))
         provider_attempts=[x for x in all_attempts if x.get("model")==model]
         failed_attempts=[x for x in provider_attempts if x.get("status") in ("failed","failed_external")]
         successful_attempts=[x for x in provider_attempts if x.get("status")=="success"]
@@ -216,10 +269,12 @@ def audit_models(path,cfg,now):
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
             "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
             "provider_attempts":provider_attempts,
+            "ensemble_run_identity_failures":identity_failures,
+            "ensemble_member_failures":member_failures,
             "optional_weather_context_warnings":optional_source_warnings,
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
-            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,field_failures,timestamp_failures,critical_source_errors,model_qerrors]) and run is not None,
+            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,field_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures]) and run is not None,
             "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 
@@ -355,6 +410,90 @@ def audit_svg(path,cfg,now):
         "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc")
     })
 
+def audit_skm(path,cfg,now):
+    issues=[];sources={}
+    station="SKM-898";pcfg=cfg.get("skm_policy") or {}
+    if not path.exists():
+        issues.append(issue("SKM_BUNDLE_FILE_NOT_CREATED","ERROR",station,"bundle",
+            "The optional MeteoMap probe produced no payload.",path=str(path)))
+        return make_report("skm",now,sources,issues,False,{"input_file_present":False,"non_blocking":True})
+    try:d=json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        issues.append(issue("SKM_BUNDLE_JSON_INVALID","ERROR",station,"bundle",
+            "The optional SKM payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
+        return make_report("skm",now,sources,issues,False,{"input_file_present":True,"non_blocking":True})
+
+    if str(d.get("source_timestamp_timezone"))!="UTC":
+        issues.append(issue("SKM_TIMESTAMP_SEMANTICS_NOT_UTC","ERROR",station,"timestamps",
+            "MeteoMap chart timestamps must be interpreted as timezone-naive UTC.",
+            recorded_source_timestamp_timezone=d.get("source_timestamp_timezone")))
+
+    summary=d.get("endpoint_summary") or {};reqs=d.get("requests") or {}
+    if not isinstance(reqs,list):reqs=[]
+    required=list(pcfg.get("required_endpoints") or ["wind","gust"])
+    future_tol=float(pcfg.get("maximum_timestamp_future_tolerance_minutes",15))
+    fresh=float(pcfg.get("fresh_target_minutes",30))
+    maxage=float(pcfg.get("maximum_diagnostic_age_minutes",120))
+    endpoint_times={}
+    required_ok=True
+    for kind in required:
+        s=summary.get(kind) if isinstance(summary.get(kind),dict) else {}
+        t=dt(s.get("last_time_utc"));endpoint_times[kind]=t
+        if not s.get("success") or t is None:
+            required_ok=False
+            related=[x for x in reqs if isinstance(x,dict) and x.get("kind")==kind]
+            issues.append(issue("SKM_REQUIRED_ENDPOINT_UNAVAILABLE","ERROR",station,kind,
+                "The optional SKM probe could not establish a parseable non-future observation for a required endpoint.",
+                endpoint=kind,endpoint_summary=s,requests=related))
+            continue
+        age=(now-t).total_seconds()/60
+        if age < -future_tol:
+            required_ok=False
+            issues.append(issue("SKM_OBSERVATION_TIMESTAMP_TOO_FAR_IN_FUTURE","ERROR",station,kind,
+                "The newest SKM timestamp is implausibly in the future.",
+                endpoint=kind,observation_time_utc=t.isoformat(),checked_at_utc=now.isoformat(),
+                future_offset_minutes=round(-age,2),allowed_future_minutes=future_tol))
+        elif age>maxage:
+            issues.append(issue("SKM_OBSERVATION_OLDER_THAN_DIAGNOSTIC_TARGET","WARN",station,kind,
+                "The endpoint responded, but the newest SKM observation is too old to describe current lake conditions; it remains archival/diagnostic only.",
+                endpoint=kind,observation_time_utc=t.isoformat(),checked_at_utc=now.isoformat(),
+                observation_age_minutes=round(age,2),maximum_diagnostic_age_minutes=maxage,
+                excess_age_minutes=round(age-maxage,2)))
+        elif age>fresh:
+            issues.append(issue("SKM_OBSERVATION_EXCEEDS_FRESH_TARGET","WARN",station,kind,
+                "The newest SKM observation is older than the preferred freshness target.",
+                endpoint=kind,observation_time_utc=t.isoformat(),checked_at_utc=now.isoformat(),
+                observation_age_minutes=round(age,2),fresh_target_minutes=fresh))
+    for x in reqs:
+        if not isinstance(x,dict) or x.get("success"):continue
+        kind=x.get("kind")
+        sev="ERROR" if kind in required and not (summary.get(kind) or {}).get("success") else "WARN"
+        issues.append(issue("SKM_HTTP_OR_PARSE_ATTEMPT_FAILED",sev,station,str(kind or "request"),
+            "A bounded MeteoMap request attempt failed; this source is optional and cannot block primary SVG/model evaluation.",
+            kind=kind,source_day_utc=x.get("source_day_utc"),http_status=x.get("http_status"),
+            exception_type=x.get("exception_type"),exception_message=x.get("exception_message"),
+            elapsed_seconds=x.get("elapsed_seconds"),final_url=x.get("final_url") or x.get("request_url")))
+    wt=endpoint_times.get("wind");gt=endpoint_times.get("gust")
+    if wt and gt:
+        delta=abs((wt-gt).total_seconds()/60)
+        if delta>20:
+            issues.append(issue("SKM_WIND_GUST_TIMESTAMP_MISALIGNMENT","WARN",station,"timestamps",
+                "Wind and gust newest timestamps are materially different.",
+                wind_time_utc=wt.isoformat(),gust_time_utc=gt.isoformat(),absolute_difference_minutes=round(delta,2)))
+    sources[station]={
+        "provider":d.get("provider"),"role":d.get("role"),"station":d.get("station"),
+        "source_timestamp_timezone":d.get("source_timestamp_timezone"),
+        "retrieved_at_utc":d.get("retrieved_at_utc"),"endpoint_summary":summary,
+        "request_diagnostics":reqs,"required_endpoints":required,
+        "required_endpoints_have_parseable_nonfuture_data":required_ok,
+        "non_blocking":True,
+    }
+    return make_report("skm",now,sources,issues,required_ok,{
+        "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc"),
+        "non_blocking":True,"operational_authority":False,
+        "interpretation":"SKM is a legacy north-shore diagnostic only; PASS/FAIL never gates primary SVG/model evaluation."
+    })
+
 def markdown(report):
     lines=[
         "# Collector integrity — "+report["kind"],"",
@@ -371,7 +510,7 @@ def markdown(report):
                 name,x["selected_run_time_utc"] or "—",x["run_age_hours"],x["maximum_run_age_hours"],
                 len(x["received_leads_hours"]),len(x["expected_collection_leads_hours"]),
                 x["provider_expected_max_horizon_hours"],x["provider_cycle_complete"],x["currentness_policy_pass"]))
-    else:
+    elif report["kind"]=="svg":
         x=report["sources"].get("SVG-42374",{})
         lines += [
             "- Current observation UTC: "+str(x.get("current_observation_time_utc")),
@@ -381,6 +520,16 @@ def markdown(report):
                 x.get("historic_record_count"),x.get("historic_unique_timestamp_count"),x.get("expected_five_minute_intervals"),x.get("coverage_ratio_of_requested_interval_count")),
             "- Window edges not covered: start %s min; end %s min; internal cadence gaps: %s."%(
                 x.get("uncovered_start_minutes"),x.get("uncovered_end_minutes"),x.get("historic_gap_count")),""
+        ]
+    else:
+        x=report["sources"].get("SKM-898",{})
+        es=x.get("endpoint_summary") or {}
+        lines += [
+            "- Non-blocking legacy diagnostic: **True**",
+            "- Operational authority: **False**",
+            "- Wind newest UTC / age: %s / %s min."%(es.get("wind",{}).get("last_time_utc"),es.get("wind",{}).get("observation_age_minutes")),
+            "- Gust newest UTC / age: %s / %s min."%(es.get("gust",{}).get("last_time_utc"),es.get("gust",{}).get("observation_age_minutes")),
+            "- Required endpoint data present: "+str(x.get("required_endpoints_have_parseable_nonfuture_data")),""
         ]
     lines += ["## Exact diagnostics",""]
     if not report["issues"]:lines.append("- No integrity deviations recorded.")
@@ -396,10 +545,12 @@ def markdown(report):
     return "\n".join(lines)+"\n"
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--kind",required=True,choices=("models","svg"))
+    ap=argparse.ArgumentParser();ap.add_argument("--kind",required=True,choices=("models","svg","skm"))
     ap.add_argument("--input",required=True);ap.add_argument("--json-out",required=True);ap.add_argument("--md-out",required=True)
     args=ap.parse_args();cfg=json.loads(POLICY.read_text(encoding="utf-8"));now=datetime.now(timezone.utc)
-    report=audit_models(Path(args.input),cfg,now) if args.kind=="models" else audit_svg(Path(args.input),cfg,now)
+    if args.kind=="models":report=audit_models(Path(args.input),cfg,now)
+    elif args.kind=="svg":report=audit_svg(Path(args.input),cfg,now)
+    else:report=audit_skm(Path(args.input),cfg,now)
     jp=Path(args.json_out);mp=Path(args.md_out);jp.parent.mkdir(parents=True,exist_ok=True);mp.parent.mkdir(parents=True,exist_ok=True)
     jp.write_text(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n",encoding="utf-8")
     mp.write_text(markdown(report),encoding="utf-8")
