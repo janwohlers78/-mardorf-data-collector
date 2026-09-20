@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch DWD core models ICON-EU and ICON-D2-EPS for Mardorf."""
-import argparse,bz2,json,math,re,statistics,subprocess,tempfile,os
+import argparse,bz2,json,math,re,statistics,subprocess,tempfile,os,time
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -8,6 +8,10 @@ import requests
 
 LAT=52.4942; LON=9.3418
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
+OPEN_METEO_D2_EPS_META='https://api.open-meteo.com/data/dwd_icon_d2_eps/static/meta.json'
+OPEN_METEO_D2_EPS_API='https://ensemble-api.open-meteo.com/v1/ensemble'
+EPS_EXPECTED_MEMBERS=20
+EPS_SETTLING_SECONDS=600
 
 
 def nearest(path):
@@ -67,8 +71,19 @@ def find_dwd_file(model,cycle,lead,param):
     return sorted(candidates)[0]
 
 
-def fetch_icon_eu(leads):
-    model='icon-eu'; cycle=discover_cycle(model,max(leads) if leads else 0)
+def fetch_icon_eu(leads,required_cycle_lead=None):
+    model='icon-eu'
+    requested=max(leads) if leads else 0
+    selector=requested if required_cycle_lead is None else max(requested,int(required_cycle_lead))
+    try:
+        cycle=discover_cycle(model,selector)
+        selection={'requested_cycle_lead_hours':selector,'fallback_used':False}
+    except Exception as primary:
+        if selector<=requested: raise
+        cycle=discover_cycle(model,requested)
+        selection={'requested_cycle_lead_hours':selector,'fallback_used':True,
+                   'fallback_required_lead_hours':requested,
+                   'primary_selection_error':f'{type(primary).__name__}: {primary}'}
     base=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
     params=['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']
     with tempfile.TemporaryDirectory() as td:
@@ -81,7 +96,7 @@ def fetch_icon_eu(leads):
                     vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
                 except Exception as e: vals[param]={'error':f'{type(e).__name__}: {e}'}
             one=lambda p: vals[p][0]['value'] if isinstance(vals.get(p),list) and vals[p] else None
-            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals}
+            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'cycle_selection':selection}
             if one('u_10m') is not None and one('v_10m') is not None: rec['derived']=derived(one('u_10m'),one('v_10m'),one('vmax_10m'))
             out.append(rec)
     return out
@@ -112,7 +127,7 @@ def eps_statistics(members):
 def member_columns(hourly,prefix):
     out={0:hourly[prefix]} if prefix in hourly else {}
     for key,values in hourly.items():
-        m=re.fullmatch(re.escape(prefix)+r'_member(\\d+)',key)
+        m=re.fullmatch(re.escape(prefix)+r'_member(\d+)',key)
         if m: out[int(m.group(1))]=values
     return out
 
@@ -120,37 +135,122 @@ def member_map(hourly,prefix):
     return member_columns(hourly,prefix)
 
 
+def _epoch_utc(value,label):
+    if value is None: raise RuntimeError(f'Open-Meteo EPS metadata missing {label}')
+    return datetime.fromtimestamp(int(value),tz=timezone.utc)
+
+def fetch_eps_metadata():
+    r=S.get(OPEN_METEO_D2_EPS_META,timeout=30);r.raise_for_status();d=r.json()
+    init=_epoch_utc(d.get('last_run_initialisation_time'),'last_run_initialisation_time')
+    avail=_epoch_utc(d.get('last_run_availability_time'),'last_run_availability_time')
+    return {
+        'url':r.url,
+        'http_status':r.status_code,
+        'last_run_initialisation_time_utc':init.isoformat(),
+        'last_run_availability_time_utc':avail.isoformat(),
+        'last_run_modification_time_utc':_epoch_utc(d.get('last_run_modification_time'),'last_run_modification_time').isoformat() if d.get('last_run_modification_time') is not None else None,
+        'temporal_resolution_seconds':d.get('temporal_resolution_seconds'),
+        'update_interval_seconds':d.get('update_interval_seconds'),
+    }
+
+def _meta_dt(meta,key):
+    return datetime.fromisoformat(meta[key]).astimezone(timezone.utc)
+
 def fetch_icon_d2_eps(leads):
-    # Native DWD ICON-D2-EPS is icosahedral; point extraction uses the explicitly
-    # named Open-Meteo DWD ensemble endpoint while retaining DWD run identity.
-    cycle=discover_cycle('icon-d2-eps',max(leads) if leads else 0)
-    base=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc)
-    api='https://ensemble-api.open-meteo.com/v1/ensemble'
-    # DWD 21Z/late cycles can begin before 00 UTC of the API's current day. Request
-    # one archived day so lead 0 is not lost; four forecast days cover the full 48 h.
-    q={'latitude':LAT,'longitude':LON,'hourly':'wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,cape','models':'dwd_icon_d2_eps','past_days':1,'forecast_days':4,'wind_speed_unit':'ms','timezone':'GMT'}
-    r=S.get(api,params=q,timeout=90); r.raise_for_status(); payload=r.json(); hourly=payload['hourly']; times=hourly['time']
+    """Fetch one stable, explicitly identified Open-Meteo DWD ICON-D2-EPS run.
+
+    Run identity comes from Open-Meteo's model metadata. The API is queried only
+    after the documented 10-minute settling period, metadata is re-read after the
+    ensemble request, and the run must be unchanged. The corresponding DWD cycle
+    and farthest requested lead must also exist in DWD Open Data.
+    """
+    meta_before=fetch_eps_metadata()
+    base=_meta_dt(meta_before,'last_run_initialisation_time_utc')
+    availability=_meta_dt(meta_before,'last_run_availability_time_utc')
     retrieved=datetime.now(timezone.utc)
-    speed=member_map(hourly,'wind_speed_10m'); direction=member_map(hourly,'wind_direction_10m'); gust=member_map(hourly,'wind_gusts_10m'); precip=member_map(hourly,'precipitation'); cape=member_map(hourly,'cape')
-    if not speed or not direction:raise RuntimeError(f'ICON-D2-EPS member fields missing; keys={list(hourly)[:40]}')
-    index={t:i for i,t in enumerate(times)}; out=[]
+    settle_age=(retrieved-availability).total_seconds()
+    if settle_age < EPS_SETTLING_SECONDS:
+        raise RuntimeError(
+            f'Open-Meteo ICON-D2-EPS run not settled: run={base.isoformat()} '
+            f'availability={availability.isoformat()} age_seconds={round(settle_age,1)} '
+            f'required_seconds={EPS_SETTLING_SECONDS}')
+    if base.minute or base.second or base.hour%3:
+        raise RuntimeError(f'Open-Meteo ICON-D2-EPS metadata returned non-3-hour DWD cycle: {base.isoformat()}')
+
+    cycle=base.strftime('%Y%m%d%H')
+    farthest=max(leads) if leads else 0
+    dwd_confirmation=find_dwd_file('icon-d2-eps',cycle,farthest,'u_10m')
+
+    q={'latitude':LAT,'longitude':LON,
+       'hourly':'wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,cape',
+       'models':'dwd_icon_d2_eps','past_days':1,'forecast_days':4,
+       'wind_speed_unit':'ms','timezone':'GMT'}
+    r=S.get(OPEN_METEO_D2_EPS_API,params=q,timeout=90);r.raise_for_status();payload=r.json()
+    hourly=payload.get('hourly') or {};times=hourly.get('time') or []
+    speed=member_map(hourly,'wind_speed_10m');direction=member_map(hourly,'wind_direction_10m')
+    gust=member_map(hourly,'wind_gusts_10m');precip=member_map(hourly,'precipitation');cape=member_map(hourly,'cape')
+    member_ids=sorted(set(speed)&set(direction))
+    expected_ids=list(range(EPS_EXPECTED_MEMBERS))
+    if member_ids!=expected_ids:
+        raise RuntimeError(f'ICON-D2-EPS member identity mismatch: expected={expected_ids} received={member_ids}')
+
+    meta_after=fetch_eps_metadata()
+    if meta_after['last_run_initialisation_time_utc']!=meta_before['last_run_initialisation_time_utc']:
+        raise RuntimeError(
+            'Open-Meteo ICON-D2-EPS run changed during acquisition: '
+            f"before={meta_before['last_run_initialisation_time_utc']} "
+            f"after={meta_after['last_run_initialisation_time_utc']}")
+    if _meta_dt(meta_after,'last_run_availability_time_utc')!=availability:
+        raise RuntimeError(
+            'Open-Meteo ICON-D2-EPS availability metadata changed during acquisition: '
+            f"before={meta_before['last_run_availability_time_utc']} "
+            f"after={meta_after['last_run_availability_time_utc']}")
+
+    identity={
+        'verification_status':'verified_stable_metadata_and_dwd_cycle',
+        'model_id':'dwd_icon_d2_eps',
+        'run_time_utc':base.isoformat(),
+        'metadata_before':meta_before,
+        'metadata_after':meta_after,
+        'settling_age_seconds_at_request':round(settle_age,1),
+        'minimum_settling_seconds':EPS_SETTLING_SECONDS,
+        'dwd_cycle_confirmation_url':dwd_confirmation,
+        'expected_member_ids':expected_ids,
+        'source_timestamp_semantics':'Open-Meteo last_run_initialisation_time is the model reference/initialisation time',
+    }
+
+    index={t:i for i,t in enumerate(times)};out=[]
     for lead in leads:
-        valid=base+timedelta(hours=lead); i=index.get(valid.strftime('%Y-%m-%dT%H:%M')); members=[]
-        if i is not None:
-            for m in sorted(set(speed)&set(direction)):
-                if i>=len(speed[m]) or i>=len(direction[m]) or speed[m][i] is None or direction[m][i] is None:continue
+        valid=base+timedelta(hours=lead);key=valid.strftime('%Y-%m-%dT%H:%M');i=index.get(key);members=[]
+        rec_error=None
+        if i is None:
+            rec_error=f'valid timestamp {key} absent from Open-Meteo hourly time axis'
+        else:
+            for m in member_ids:
+                if i>=len(speed[m]) or i>=len(direction[m]) or speed[m][i] is None or direction[m][i] is None:
+                    continue
                 g=gust[m][i] if m in gust and i<len(gust[m]) else None
-                d=derived_from_speed(float(speed[m][i]),float(direction[m][i]),float(g) if g is not None else None); d['member']=m
+                d=derived_from_speed(float(speed[m][i]),float(direction[m][i]),float(g) if g is not None else None);d['member']=m
                 if m in precip and i<len(precip[m]) and precip[m][i] is not None:d['precipitation']=precip[m][i]
                 if m in cape and i<len(cape[m]) and cape[m][i] is not None:d['cape']=cape[m][i]
                 members.append(d)
+            got_ids=sorted(m['member'] for m in members)
+            if got_ids!=expected_ids:
+                rec_error=f'ensemble member values incomplete for lead {lead}: expected={expected_ids} received={got_ids}'
         stats=eps_statistics(members)
-        rec={'model':'ICON-D2-EPS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':valid.isoformat(),'source':'Open-Meteo Ensemble API, named model dwd_icon_d2_eps; secondary extraction of DWD ICON-D2-EPS','source_url':r.url,'members':members,'ensemble_statistics':stats}
-        if members:
-            der={'wind_speed_ms':stats['wind_speed_ms_median'],'wind_speed_kt':round(stats['wind_speed_ms_median']*1.943844,2),'ensemble_member_count':len(members)}
+        rec={'model':'ICON-D2-EPS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,
+             'valid_time_utc':valid.isoformat(),
+             'source':'Open-Meteo Ensemble API named model dwd_icon_d2_eps; DWD cycle independently confirmed',
+             'source_url':r.url,'source_run_identity':identity,'members':members,'ensemble_statistics':stats}
+        if rec_error:
+            rec['error_type']='EnsembleCompletenessError';rec['error_message']=rec_error
+        elif len(members)==EPS_EXPECTED_MEMBERS:
+            der={'wind_speed_ms':stats['wind_speed_ms_median'],'wind_speed_kt':round(stats['wind_speed_ms_median']*1.943844,2),
+                 'ensemble_member_count':len(members)}
             if 'wind_direction_deg_circular_mean' in stats:der['wind_direction_deg']=stats['wind_direction_deg_circular_mean']
             if 'gust_ms_median' in stats:
-                der['gust_ms']=stats['gust_ms_median'];der['gust_kt']=round(stats['gust_ms_median']*1.943844,2);der['gust_factor']=round(stats['gust_ms_median']/stats['wind_speed_ms_median'],2) if stats['wind_speed_ms_median']>.2 else None
+                der['gust_ms']=stats['gust_ms_median'];der['gust_kt']=round(stats['gust_ms_median']*1.943844,2)
+                der['gust_factor']=round(stats['gust_ms_median']/stats['wind_speed_ms_median'],2) if stats['wind_speed_ms_median']>.2 else None
             rec['derived']=der
         out.append(rec)
     return out
