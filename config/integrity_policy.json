@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "method_version": "collector-integrity-v1.2",
+  "method_version": "collector-integrity-v1.3",
   "model_policy": {
     "spot": {
       "latitude": 52.4942,
@@ -204,12 +204,7 @@
         "other_max_hours": 51
       },
       "ECMWF-IFS": {
-        "main_cycle_hours": [
-          0,
-          12
-        ],
-        "main_max_hours": 120,
-        "other_max_hours": 90
+        "default_max_hours": 120
       },
       "GFS": {
         "default_max_hours": 120
@@ -222,7 +217,7 @@
       "ICON-D2": 9,
       "ICON-D2-EPS": 9,
       "ICON-EU": 9,
-      "ECMWF-IFS": 12,
+      "ECMWF-IFS": 14,
       "GFS": 12,
       "GEFS-control": 12
     },
@@ -253,6 +248,22 @@
         "expected_member_count": 20,
         "required_verification_status": "verified_stable_metadata_and_dwd_cycle",
         "minimum_open_meteo_settling_seconds": 600
+      }
+    },
+    "provider_policy_notes": {
+      "ECMWF-IFS": {
+        "policy_version": "ifs-cycle50r1-open-data-2026",
+        "reference_url": "https://www.ecmwf.int/en/forecasts/datasets/open-data",
+        "runs_utc": [
+          0,
+          6,
+          12,
+          18
+        ],
+        "project_required_horizon_hours": 120,
+        "documented_06_18_open_data_horizon_hours": 144,
+        "currentness_limit_hours": 14,
+        "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule; the preceding run can legitimately exceed 12 h age while the next public cycle is still being disseminated."
       }
     }
   },
