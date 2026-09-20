@@ -8,6 +8,7 @@ on:
       - 'src/fetch_etnw_metar.py'
       - 'src/audit_secondary_integrity.py'
       - 'src/push_private.py'
+      - 'src/finalize_secondary_batch.py'
       - 'config/integrity_policy.json'
       - '.github/workflows/collect-secondary.yml'
   schedule:
@@ -69,3 +70,12 @@ jobs:
 
       - name: Gate ETNW integrity
         run: python -c "import json; d=json.load(open('work/etnw_integrity.json')); assert d['error_count']==0, d"
+
+      - name: Finalize atomic secondary batch receipt
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        run: |
+          python src/finalize_secondary_batch.py \
+            --wunstorf-integrity work/wunstorf_integrity.json \
+            --etnw-integrity work/etnw_integrity.json
