@@ -3,7 +3,7 @@ name: Collect SVG WeatherLink data
 
 on:
   push:
-    branches: [main, integrity-security-hardening-20260920]
+    branches: [main]
     paths:
       - 'src/fetch_svg_weatherlink.py'
       - 'src/fetch_skm_optional.py'
