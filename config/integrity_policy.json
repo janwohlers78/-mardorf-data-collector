@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "method_version": "collector-integrity-v1.1",
+  "method_version": "collector-integrity-v1.2",
   "model_policy": {
     "spot": {
       "latitude": 52.4942,
@@ -234,7 +234,8 @@
       "ICON-EU",
       "ECMWF-IFS",
       "GFS",
-      "GEFS-control"
+      "GEFS-control",
+      "ICON-D2-EPS"
     ],
     "retrieval_timestamp_future_tolerance_minutes": 15,
     "run_timestamp_future_tolerance_minutes": 90,
@@ -246,7 +247,14 @@
       "APCP",
       "cape",
       "precipitation"
-    ]
+    ],
+    "ensemble_identity": {
+      "ICON-D2-EPS": {
+        "expected_member_count": 20,
+        "required_verification_status": "verified_stable_metadata_and_dwd_cycle",
+        "minimum_open_meteo_settling_seconds": 600
+      }
+    }
   },
   "svg_policy": {
     "station_id": 42374,
@@ -257,5 +265,17 @@
     "maximum_timestamp_future_tolerance_minutes": 5,
     "archive_edge_tolerance_minutes": 10,
     "archive_internal_gap_warning_minutes": 5.1
+  },
+  "skm_policy": {
+    "station_id": 898,
+    "source_timestamp_timezone": "UTC",
+    "fresh_target_minutes": 30,
+    "maximum_diagnostic_age_minutes": 120,
+    "maximum_timestamp_future_tolerance_minutes": 15,
+    "required_endpoints": [
+      "wind",
+      "gust"
+    ],
+    "non_blocking": true
   }
 }
