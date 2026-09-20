@@ -9,6 +9,7 @@ on:
       - 'src/audit_secondary_integrity.py'
       - 'src/push_private.py'
       - 'src/finalize_secondary_batch.py'
+      - 'src/check_collection_due.py'
       - 'config/integrity_policy.json'
       - '.github/workflows/collect-secondary.yml'
   schedule:
