@@ -85,6 +85,9 @@ def blob(repo,content,h):
         "content":base64.b64encode(content).decode("ascii"),"encoding":"base64"})
     return d["sha"]
 
+def timestamp_not_older(current_value,incoming_value):
+    return parse_time(incoming_value)>=parse_time(current_value)
+
 def monotonic_allows(repo,item,h):
     guard=item.get("monotonic_guard")
     if not isinstance(guard,dict):return True
@@ -92,8 +95,7 @@ def monotonic_allows(repo,item,h):
     if not current:return True
     current_value=current.get(guard["field"])
     if not current_value:return True
-    current_time=parse_time(current_value);incoming=parse_time(guard["incoming_time"])
-    return incoming>=current_time
+    return timestamp_not_older(current_value,guard["incoming_time"])
 
 def mutable_already_exact(repo,item,h):
     if item.get("immutable"):return False
