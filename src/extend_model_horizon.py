@@ -16,7 +16,7 @@ from ecmwf.opendata import Client
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
 EXPECTED={'ICON-D2':48,'ICON-D2-EPS':48,'ICON-EU':120,'ECMWF-IFS':120,'GFS':120,'GEFS-control':120}
-ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','aws')
+ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 S=requests.Session();S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 
