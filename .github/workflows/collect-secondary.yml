@@ -2,7 +2,7 @@ name: Collect Wunstorf and ETNW observations
 
 on:
   push:
-    branches: [main, public-secondary-observations-20260920]
+    branches: [main]
     paths:
       - 'src/fetch_wunstorf.py'
       - 'src/fetch_etnw_metar.py'
