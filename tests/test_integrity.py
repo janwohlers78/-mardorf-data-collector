@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from datetime import datetime,timedelta,timezone
@@ -50,6 +51,7 @@ class IntegrityAuditTests(unittest.TestCase):
             models[model]=rows
         return {
             "schema_version":1,"mode":"test","retrieved_at_utc":now.isoformat(),
+            "spot":{"lat":52.4942,"lon":9.3418},
             "models":models,"quality":{"errors":[]}
         }
 
@@ -95,6 +97,7 @@ class IntegrityAuditTests(unittest.TestCase):
                 rec["values"]["vmax_10m"]={"error":"file_not_published"}
             rows.append(rec)
         d={"schema_version":1,"mode":"production","retrieved_at_utc":now.isoformat(),
+           "spot":{"lat":52.4942,"lon":9.3418},
            "models":{"ICON-EU":rows},"quality":{"errors":[]}}
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/"m.json";p.write_text(json.dumps(d))
@@ -156,6 +159,32 @@ class IntegrityAuditTests(unittest.TestCase):
         reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
         self.assertIn("source_run_identity_missing_on_some_records",reasons)
 
+    def test_model_spot_mismatch_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        d["spot"]["lat"]=53.0
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="MODEL_SPOT_IDENTITY_MISMATCH" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+
+    def test_model_record_identity_mismatch_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        d["models"]["GFS"][0]["model"]="ECMWF-IFS"
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="MODEL_RECORD_IDENTITY_MISMATCH" and x["source"]=="GFS" for x in r["issues"]))
+
+    def test_model_audit_binds_exact_payload_hash(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        raw=json.dumps(d).encode()
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_bytes(raw)
+            r=audit_models(p,POLICY,now)
+        self.assertEqual(r["input_payload_sha256"],hashlib.sha256(raw).hexdigest())
+        self.assertEqual(r["input_payload_bytes"],len(raw))
+
     def test_due_check_future_success_fails_open(self):
         now=datetime(2026,9,20,8,0,tzinfo=timezone.utc)
         stamp=(now+timedelta(minutes=45)).isoformat()
@@ -200,6 +229,9 @@ class IntegrityAuditTests(unittest.TestCase):
         if gap:times.pop(5)
         return {
             "retrieved_at_utc":now.isoformat(),
+            "station":{"id":42374,"name":"SVG"},
+            "requested_history_window":{"start_utc":(now-timedelta(minutes=60)).isoformat(),
+                                        "end_utc":now.isoformat(),"hours":1},
             "request_diagnostics":{
                 "current":{"success":True,"http_status":200,"request_path":"/current/42374"},
                 "historic":{"success":True,"http_status":200,"request_path":"/historic/42374"},
@@ -208,6 +240,46 @@ class IntegrityAuditTests(unittest.TestCase):
             "latest_observation":{"time_utc":(now-timedelta(minutes=3)).isoformat()},
             "recent_historic_observations":[{"time_utc":t.isoformat()} for t in times],
         }
+
+    def test_svg_station_mismatch_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.svg_bundle()
+        d["station"]["id"]=999
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"s.json";p.write_text(json.dumps(d))
+            r=audit_svg(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="SVG_STATION_ID_MISMATCH" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+
+    def test_svg_invalid_history_timestamp_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.svg_bundle()
+        d["recent_historic_observations"][3]["time_utc"]="not-a-time"
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"s.json";p.write_text(json.dumps(d))
+            r=audit_svg(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="SVG_HISTORIC_TIMESTAMP_INVALID" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+
+    def test_svg_out_of_window_history_timestamp_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.svg_bundle()
+        d["recent_historic_observations"][0]["time_utc"]=(now-timedelta(hours=2)).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"s.json";p.write_text(json.dumps(d))
+            r=audit_svg(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="SVG_HISTORIC_TIMESTAMP_OUTSIDE_REQUEST_WINDOW" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+
+    def test_skm_station_mismatch_is_hard_error_but_remains_nonblocking_source(self):
+        now=datetime.now(timezone.utc);old=(now-timedelta(minutes=5)).isoformat()
+        d={"retrieved_at_utc":now.isoformat(),"provider":"MeteoMap.cloud",
+           "source_timestamp_timezone":"UTC","station":{"id":999},"requests":[],
+           "endpoint_summary":{"wind":{"success":True,"last_time_utc":old},
+                               "gust":{"success":True,"last_time_utc":old}}}
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"k.json";p.write_text(json.dumps(d))
+            r=audit_skm(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="SKM_STATION_ID_MISMATCH" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+        self.assertTrue(r["non_blocking"])
 
     def test_svg_exact_gap_is_reported(self):
         now=datetime.now(timezone.utc)
