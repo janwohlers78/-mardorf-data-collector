@@ -94,6 +94,8 @@ def audit_wunstorf(path,cfg,now):
         "provider":d.get("provider"),"station":station,"retrieved_at_utc":d.get("retrieved_at_utc"),
         "latest_observation_time_utc":d.get("latest_observation_time_utc"),
         "observation_age_minutes":round(age,2) if age is not None else None,
+        "recent_reference_minutes":float(pcfg.get("recent_reference_minutes",180)),
+        "warning_archive_age_minutes":float(pcfg.get("warning_archive_age_minutes",2880)),
         "record_count":len(rows),"quality":d.get("quality"),"request_diagnostics":d.get("request_diagnostics"),
         "role":d.get("source_role"),
     }
@@ -150,6 +152,7 @@ def audit_etnw(path,cfg,now):
         "provider":d.get("provider"),"station":station,"retrieved_at_utc":d.get("retrieved_at_utc"),
         "latest_observation_time_utc":d.get("latest_observation_time_utc"),
         "observation_age_minutes":round(age,2) if age is not None else None,
+        "fresh_target_minutes":fresh,"maximum_current_age_minutes":maximum,
         "record_count":len(rows),"quality":d.get("quality"),"request_diagnostics":d.get("request_diagnostics"),
         "dwd_05715_crosscheck":d.get("dwd_05715_crosscheck"),"role":d.get("source_role"),
     }
