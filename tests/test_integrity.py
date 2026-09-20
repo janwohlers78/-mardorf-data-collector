@@ -303,6 +303,24 @@ class IntegrityAuditTests(unittest.TestCase):
         self.assertFalse(r["bundle_ready_for_private_revalidation"])
         self.assertTrue(r["non_blocking"])
 
+    def test_svg_future_history_timestamp_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.svg_bundle()
+        d["recent_historic_observations"][-1]["time_utc"]=(now+timedelta(minutes=30)).isoformat()
+        d["requested_history_window"]["end_utc"]=(now+timedelta(hours=1)).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"s.json";p.write_text(json.dumps(d))
+            r=audit_svg(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="SVG_HISTORIC_TIMESTAMP_TOO_FAR_IN_FUTURE" for x in r["issues"]))
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
+
+    def test_ecmwf_cycle_horizon_and_freshness_policy(self):
+        from audit_integrity import provider_max
+        self.assertEqual(provider_max("ECMWF-IFS",0,POLICY),120)
+        self.assertEqual(provider_max("ECMWF-IFS",12,POLICY),120)
+        self.assertEqual(provider_max("ECMWF-IFS",6,POLICY),90)
+        self.assertEqual(provider_max("ECMWF-IFS",18,POLICY),90)
+        self.assertEqual(POLICY["model_policy"]["maximum_run_age_hours"]["ECMWF-IFS"],14)
+
     def test_svg_exact_gap_is_reported(self):
         now=datetime.now(timezone.utc)
         with tempfile.TemporaryDirectory() as td:
