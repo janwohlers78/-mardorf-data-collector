@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 
 from audit_integrity import audit_models,audit_svg,audit_skm
+from check_collection_due import evaluate_latest_success
 
 POLICY=json.loads(Path("config/integrity_policy.json").read_text(encoding="utf-8"))
 FAMILY_MODELS=("ICON-D2","GFS","ECMWF-IFS","GEFS-control","ICON-EU","ICON-D2-EPS")
@@ -29,7 +30,10 @@ class IntegrityAuditTests(unittest.TestCase):
                 }
                 if model=="ICON-D2-EPS":
                     ids=list(range(20))
-                    rec["members"]=[{"member":i} for i in ids]
+                    rec["members"]=[{
+                        "member":i,"wind_speed_ms":5.0,
+                        "wind_direction_deg":270.0,"gust_ms":7.0
+                    } for i in ids]
                     rec["ensemble_statistics"]={"member_count":20}
                     rec["derived"]["ensemble_member_count"]=20
                     meta={"last_run_initialisation_time_utc":run.isoformat(),
@@ -127,6 +131,46 @@ class IntegrityAuditTests(unittest.TestCase):
             r=audit_models(p,POLICY,now)
         xs=[x for x in r["issues"] if x["code"]=="ENSEMBLE_RUN_IDENTITY_UNVERIFIED"]
         self.assertEqual(len(xs),1,r["issues"])
+
+    def test_eps_member_missing_gust_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        del d["models"]["ICON-D2-EPS"][0]["members"][7]["gust_ms"]
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="ENSEMBLE_MEMBER_SET_INCOMPLETE"]
+        self.assertEqual(len(xs),1,r["issues"])
+        affected=xs[0]["details"]["affected_leads"][0]
+        self.assertEqual(affected["lead_hours"],0)
+        self.assertEqual(affected["incomplete_wind_core_members"][0]["member"],7)
+        self.assertIn("gust_ms",affected["incomplete_wind_core_members"][0]["missing_or_invalid_fields"])
+
+    def test_eps_identity_missing_on_one_lead_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        del d["models"]["ICON-D2-EPS"][0]["source_run_identity"]
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="ENSEMBLE_RUN_IDENTITY_UNVERIFIED"]
+        self.assertEqual(len(xs),1,r["issues"])
+        reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
+        self.assertIn("source_run_identity_missing_on_some_records",reasons)
+
+    def test_due_check_future_success_fails_open(self):
+        now=datetime(2026,9,20,8,0,tzinfo=timezone.utc)
+        stamp=(now+timedelta(minutes=45)).isoformat()
+        due,reason,age=evaluate_latest_success(stamp,now,150)
+        self.assertTrue(due)
+        self.assertEqual(reason,"latest_success_timestamp_future_fail_open")
+        self.assertLess(age,-15)
+
+    def test_due_check_small_clock_skew_can_still_skip(self):
+        now=datetime(2026,9,20,8,0,tzinfo=timezone.utc)
+        stamp=(now+timedelta(minutes=5)).isoformat()
+        due,reason,age=evaluate_latest_success(stamp,now,150)
+        self.assertFalse(due)
+        self.assertEqual(reason,"last_success_within_threshold")
+        self.assertEqual(age,0.0)
 
     def test_skm_stale_is_warning_not_primary_gate(self):
         now=datetime.now(timezone.utc)
