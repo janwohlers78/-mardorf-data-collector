@@ -11,7 +11,7 @@ def _grib_datetime(date_value,time_value,label,path):
     return datetime.strptime(ds+ts.zfill(4),"%Y%m%d%H%M").replace(tzinfo=timezone.utc)
 
 def _step_end_hours(step_range):
-    tokens=re.findall(r"(-?\d+(?:\.\d+)?)([smhd]?)",str(step_range).lower())
+    tokens=re.findall(r"(\d+(?:\.\d+)?)([smhd]?)",str(step_range).lower())
     if not tokens:return None
     value=float(tokens[-1][0]);unit=tokens[-1][1]
     factors={"":1.0,"h":1.0,"m":1.0/60.0,"s":1.0/3600.0,"d":24.0}
