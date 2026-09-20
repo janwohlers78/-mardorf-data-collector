@@ -18,6 +18,7 @@ LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_sn
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
 EXPECTED={'ICON-D2':48,'ICON-D2-EPS':48,'ICON-EU':120,'ECMWF-IFS':120,'GFS':120,'GEFS-control':120}
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
+ECMWF_PARAMS=['10u','10v','10fg','10fg3','tp','mucape']
 S=requests.Session();S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 
@@ -103,7 +104,7 @@ def fetch_ifs(data):
         p=Path(td)/'ifs_medium_range_batch.grib2'
         client.retrieve(
             date=base.strftime('%Y%m%d'),time=base.hour,stream='oper',type='fc',
-            step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(p))
+            step=leads,param=ECMWF_PARAMS,target=str(p))
         actual=grib_run_time(p)
         assert_grib_batch_leads(p,actual,leads,'ECMWF-IFS extension batch')
         if actual!=base:
