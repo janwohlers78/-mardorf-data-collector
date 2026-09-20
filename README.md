@@ -117,11 +117,15 @@ Optional legacy SKM remains probed for diagnostics, but a failed/not-ready SKM
 audit is no longer transferred to the private repository on every SVG cycle. The
 primary SVG transfer is unaffected.
 
-ICON-D2-EPS provenance now includes a direct DWD GRIB nearest-grid comparison
-against the Open-Meteo returned extraction coordinate. Native-grid parity is a
-hard collector gate. The Open-Meteo live Ensemble API response still does not
-embed an initialization timestamp, so `response_bound_run_identity_verified`
-remains false. The collector records the exact response SHA, stable before/after
+ICON-D2-EPS provenance now verifies two spatial facts from DWD directly: the
+ensemble GRIB identifies the official unstructured ICON-D2 grid (grid 47), and
+the Open-Meteo returned extraction coordinate matches the nearest point in DWD's
+0.02-degree regular ICON-D2 output grid for the same cycle/lead. Direct equality
+to a native triangular-grid point is deliberately **not** claimed because DWD's
+ensemble GRIB requires the separate external native-grid definition for that
+lookup. The Open-Meteo live Ensemble API response still does not embed an
+initialization timestamp, so `response_bound_run_identity_verified` remains
+false. The collector records the exact response SHA, stable before/after
 metadata, direct DWD cycle confirmation and the explicit
 `strong_indirect_bracketed_not_provider_embedded` binding status rather than
 claiming stronger evidence than the provider exposes.
