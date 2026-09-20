@@ -1,4 +1,4 @@
-name: Collect SVG WeatherLink data
+# validation_generation: skm-readback-audit-20260920\nname: Collect SVG WeatherLink data
 
 on:
   push:
