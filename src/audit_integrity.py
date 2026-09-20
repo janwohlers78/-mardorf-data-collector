@@ -198,13 +198,24 @@ def audit_models(path,cfg,now):
             expected=[x for x in desired_leads(model,cfg) if pmax is not None and x<=pmax]
             project_gap=[x for x in desired_leads(model,cfg) if pmax is not None and x>pmax]
         got=sorted(lead_rows);missing=sorted(set(expected)-set(got));extra=sorted(set(got)-set(expected))
-        field_failures=[];timestamp_failures=[];critical_source_errors=[];optional_source_warnings=[];outside_horizon_records=[]
+        field_failures=[];timestamp_failures=[];coordinate_failures=[];coordinate_points=set();critical_source_errors=[];optional_source_warnings=[];outside_horizon_records=[]
         expected_set=set(expected)
         optional_fields=set(cfg["model_policy"].get("optional_weather_context_fields",[]))
         for lead,r in sorted(lead_rows.items()):
             in_provider_scope=lead in expected_set
             if not in_provider_scope:
                 outside_horizon_records.append({"lead_hours":lead,"reason":"outside_selected_provider_cycle_horizon"})
+            pt=r.get("forecast_coordinate_or_grid_point") if isinstance(r.get("forecast_coordinate_or_grid_point"),dict) else {}
+            plat=pt.get("latitude",pt.get("lat"));plon=pt.get("longitude",pt.get("lon"))
+            if in_provider_scope:
+                if (not finite(plat) or not finite(plon)
+                        or abs(float(plat)-float(expected_spot["latitude"]))>0.30
+                        or abs(float(plon)-float(expected_spot["longitude"]))>0.30):
+                    coordinate_failures.append({
+                        "lead_hours":lead,"reason":"missing_or_implausible_forecast_grid_point",
+                        "forecast_coordinate_or_grid_point":pt})
+                else:
+                    coordinate_points.add((round(float(plat),6),round(float(plon),6)))
             der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
             req=list(cfg["model_policy"]["required_derived_fields"])
             if model in cfg["model_policy"]["required_gust_models"]:req.append("gust_ms")
@@ -243,6 +254,13 @@ def audit_models(path,cfg,now):
                     if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
                         record_problem({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")},key)
 
+        if len(coordinate_points)>1:
+            coordinate_failures.append({
+                "reason":"forecast_grid_point_changes_within_model_run",
+                "observed_points":[{"latitude":x[0],"longitude":x[1]} for x in sorted(coordinate_points)]})
+        coordinate_summary=(
+            {"latitude":next(iter(coordinate_points))[0],"longitude":next(iter(coordinate_points))[1]}
+            if len(coordinate_points)==1 else None)
         identity_failures=[];member_failures=[];identity_summary=None;member_count_by_lead={}
         hourly_source_failures=[];hourly_source_summary=None
         if model=="ICON-D2-EPS" and recs:
@@ -372,6 +390,10 @@ def audit_models(path,cfg,now):
             issues.append(issue("REQUIRED_DERIVED_FIELDS_UNAVAILABLE","ERROR",model,"fields",
                 "Wind data required by the private integrity gate could not be derived for specific leads.",
                 affected_leads=field_failures))
+        if coordinate_failures:
+            issues.append(issue("MODEL_FORECAST_GRID_IDENTITY_INVALID","ERROR",model,"grid_identity",
+                "The actual forecast extraction/grid point is missing, implausible or changes between required leads.",
+                canonical_requested_spot=expected_spot,failures=coordinate_failures))
         if timestamp_failures:
             issues.append(issue("FORECAST_TIMESTAMP_OR_LEAD_INCONSISTENCY","ERROR",model,"timestamps",
                 "Declared run/valid/lead metadata are internally inconsistent for specific records.",
@@ -433,6 +455,8 @@ def audit_models(path,cfg,now):
             "expected_collection_leads_hours":expected,"received_leads_hours":got,"missing_expected_leads_hours":missing,
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
+            "forecast_coordinate_or_grid_point":coordinate_summary,
+            "forecast_grid_identity_failures":coordinate_failures,
             "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
             "provider_attempts":provider_attempts,
             "ensemble_run_identity":identity_summary,
@@ -444,7 +468,7 @@ def audit_models(path,cfg,now):
             "optional_weather_context_warnings":optional_source_warnings,
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
-            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures,hourly_source_failures]) and run is not None,
+            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,coordinate_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures,hourly_source_failures]) and run is not None,
             "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 
