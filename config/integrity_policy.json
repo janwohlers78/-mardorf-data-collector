@@ -251,8 +251,10 @@
     "ensemble_identity": {
       "ICON-D2-EPS": {
         "expected_member_count": 20,
-        "required_verification_status": "verified_stable_metadata_and_dwd_cycle",
-        "minimum_open_meteo_settling_seconds": 600
+        "required_verification_status": "verified_stable_metadata_dwd_cycle_and_native_grid",
+        "minimum_open_meteo_settling_seconds": 600,
+        "require_native_grid_parity": true,
+        "response_run_binding_policy": "strong_indirect_bracketed_required_until_provider_embedded_identity_available"
       }
     },
     "provider_policy_notes": {

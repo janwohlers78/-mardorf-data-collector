@@ -24,6 +24,12 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertNotIn("fetch_svg_weatherlink.py",s)
         self.assertNotIn("fetch_etnw_metar.py",s)
 
+    def test_failed_optional_skm_is_not_persisted_privately(self):
+        s=self.text("collect-svg.yml")
+        self.assertIn("id: skm_transfer_gate",s)
+        self.assertIn("bundle_ready_for_private_revalidation",s)
+        self.assertIn("steps.skm_transfer_gate.outputs.ready == 'true'",s)
+
     def test_svg_watchdog_is_freshness_gated(self):
         s=self.text("collect-svg.yml")
         self.assertIn("watchdog:",s)

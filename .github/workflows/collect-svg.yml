@@ -101,6 +101,25 @@ jobs:
             --json-out work/skm_integrity.json \
             --md-out work/skm_integrity.md
 
+      - name: Decide whether optional SKM is worth persisting privately
+        id: skm_transfer_gate
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path('work/skm_integrity.json')
+          ready=False
+          reason='integrity_report_missing'
+          if p.exists():
+              d=json.load(open(p))
+              ready=d.get('bundle_ready_for_private_revalidation') is True
+              reason='audit_ready' if ready else 'audit_not_ready_nonblocking_legacy_source'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f"ready={'true' if ready else 'false'}\n")
+              f.write(f"reason={reason}\n")
+          print('optional_skm_private_transfer=',ready,'reason=',reason)
+          PY
+
       - name: Publish detailed integrity reports in Actions summary
         if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |
@@ -130,7 +149,7 @@ jobs:
           python src/push_private.py "${args[@]}"
 
       - name: Transfer optional SKM payload and health to private repository
-        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
+        if: always() && steps.skm_transfer_gate.outputs.ready == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
         continue-on-error: true
         shell: bash
         env:

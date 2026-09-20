@@ -41,7 +41,7 @@ class IntegrityAuditTests(unittest.TestCase):
                     meta={"last_run_initialisation_time_utc":run.isoformat(),
                           "last_run_availability_time_utc":(run-timedelta(minutes=20)).isoformat()}
                     rec["source_run_identity"]={
-                        "verification_status":"verified_stable_metadata_and_dwd_cycle",
+                        "verification_status":"verified_stable_metadata_dwd_cycle_and_native_grid",
                         "run_time_utc":run.isoformat(),
                         "metadata_before":meta,"metadata_after":meta,
                         "settling_age_seconds_at_request":1200,
@@ -73,6 +73,14 @@ class IntegrityAuditTests(unittest.TestCase):
             "columns":columns,
             "requested_coordinate":{"latitude":52.4942,"longitude":9.3418},
             "returned_coordinate":{"latitude":52.5,"longitude":9.34},
+            "native_grid_parity_verified":True,
+            "native_grid_parity_evidence":{"verified":True,"method":"test"},
+            "response_bound_run_identity_verified":False,
+            "response_run_binding":{
+                "status":"strong_indirect_bracketed_not_provider_embedded",
+                "provider_response_embeds_run_time":False,
+                "metadata_stable_across_response":True,
+            },
         }
         failures,summary=audit_eps_hourly_source(source,run,20)
         self.assertEqual(failures,[],failures)
@@ -89,6 +97,16 @@ class IntegrityAuditTests(unittest.TestCase):
         del broken["columns"]["wind_gusts_10m"]["19"]
         failures,_=audit_eps_hourly_source(broken,run,20)
         self.assertTrue(any(x["reason"]=="hourly_source_member_identity_mismatch" for x in failures),failures)
+
+        broken=json.loads(json.dumps(source))
+        broken["native_grid_parity_verified"]=False
+        failures,_=audit_eps_hourly_source(broken,run,20)
+        self.assertTrue(any(x["reason"]=="hourly_source_native_grid_parity_unverified" for x in failures),failures)
+
+        broken=json.loads(json.dumps(source))
+        broken["response_run_binding"]={}
+        failures,_=audit_eps_hourly_source(broken,run,20)
+        self.assertTrue(any(x["reason"]=="hourly_source_run_binding_evidence_missing" for x in failures),failures)
 
     def test_complete_reduced_model_bundle_passes(self):
         now=datetime.now(timezone.utc)

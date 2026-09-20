@@ -103,3 +103,25 @@ repeatedly downloading the same full 120-hour provider datasets and unnecessaril
 loading DWD, ECMWF and NOAA services. Scheduled due runs remain full acquisitions and therefore continuously exercise
 the complete provider horizon that is actually published for the selected model
 cycle.
+
+
+## Integrity hardening 2026-09-21
+
+Private-repository publication uses an eight-attempt compare-and-swap style
+main-ref retry window. Every retry re-reads the current private `main`, re-applies
+monotonic pointer guards, rebuilds the tree on the new parent and repeats exact-byte
+readback before publication. This is intended to tolerate concurrent model, SVG,
+secondary and private-product writers without force-updating the branch.
+
+Optional legacy SKM remains probed for diagnostics, but a failed/not-ready SKM
+audit is no longer transferred to the private repository on every SVG cycle. The
+primary SVG transfer is unaffected.
+
+ICON-D2-EPS provenance now includes a direct DWD GRIB nearest-grid comparison
+against the Open-Meteo returned extraction coordinate. Native-grid parity is a
+hard collector gate. The Open-Meteo live Ensemble API response still does not
+embed an initialization timestamp, so `response_bound_run_identity_verified`
+remains false. The collector records the exact response SHA, stable before/after
+metadata, direct DWD cycle confirmation and the explicit
+`strong_indirect_bracketed_not_provider_embedded` binding status rather than
+claiming stronger evidence than the provider exposes.
