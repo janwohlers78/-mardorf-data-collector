@@ -108,9 +108,16 @@ def audit_eps_hourly_source(source,run,expected_members=20):
         failures.append({"reason":"hourly_source_requested_coordinate_mismatch","value":requested})
     if not finite(rlat) or not finite(rlon) or abs(float(rlat)-52.4942)>.05 or abs(float(rlon)-9.3418)>.08:
         failures.append({"reason":"hourly_source_returned_coordinate_implausible","value":returned})
-    if source.get("native_grid_parity_verified") is not True:
-        failures.append({"reason":"hourly_source_native_grid_parity_unverified",
-                         "evidence":source.get("native_grid_parity_evidence")})
+    spatial=source.get("spatial_provenance_evidence") if isinstance(source.get("spatial_provenance_evidence"),dict) else {}
+    if source.get("spatial_provenance_verified") is not True or spatial.get("verified") is not True:
+        failures.append({"reason":"hourly_source_spatial_provenance_unverified",
+                         "evidence":spatial})
+    if source.get("dwd_eps_native_grid_identity_verified") is not True:
+        failures.append({"reason":"hourly_source_dwd_eps_native_grid_identity_unverified",
+                         "evidence":spatial.get("eps_native_grid_identity")})
+    if source.get("dwd_regular_grid_coordinate_parity_verified") is not True:
+        failures.append({"reason":"hourly_source_dwd_regular_grid_coordinate_parity_unverified",
+                         "evidence":spatial})
     binding=source.get("response_run_binding") if isinstance(source.get("response_run_binding"),dict) else {}
     if source.get("response_bound_run_identity_verified") is not True and binding.get("status")!="strong_indirect_bracketed_not_provider_embedded":
         failures.append({"reason":"hourly_source_run_binding_evidence_missing",
@@ -124,6 +131,9 @@ def audit_eps_hourly_source(source,run,expected_members=20):
         "retrieved_at_utc":source.get("retrieved_at_utc"),
         "requested_coordinate":requested,"returned_coordinate":returned,
         "cycle_evidence":source.get("cycle_evidence"),
+        "spatial_provenance_verified":source.get("spatial_provenance_verified"),
+        "dwd_eps_native_grid_identity_verified":source.get("dwd_eps_native_grid_identity_verified"),
+        "dwd_regular_grid_coordinate_parity_verified":source.get("dwd_regular_grid_coordinate_parity_verified"),
         "native_grid_parity_verified":source.get("native_grid_parity_verified"),
         "response_bound_run_identity_verified":source.get("response_bound_run_identity_verified"),
         "response_run_binding_status":binding.get("status"),
