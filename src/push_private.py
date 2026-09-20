@@ -46,15 +46,30 @@ def decoded_json_content(meta):
         return None
 
 def same_existing(repo,path,content,h,gz=False):
+    """Return the existing blob SHA only when immutable bytes match exactly."""
     meta=content_meta(repo,path,h)
     if not meta:return False
-    blob=requests.get(meta["download_url"],timeout=30).content
-    try:existing=gzip.decompress(blob) if gz else blob
-    except Exception:return False
-    target=gzip.decompress(content) if gz else content
-    if existing!=target:
-        raise RuntimeError(f"immutable destination already exists with different content: {path}")
-    return True
+    sha=meta.get("sha")
+    if not sha:
+        raise RuntimeError(f"immutable destination has no blob SHA: {path}")
+    b=req("GET",f"{API}/repos/{repo}/git/blobs/{sha}",h)
+    if b.get("encoding")!="base64":
+        raise RuntimeError(f"immutable destination has unexpected blob encoding: {path}")
+    existing=base64.b64decode((b.get("content") or "").replace("\n",""))
+    if existing!=content:
+        detail=""
+        if gz:
+            try:
+                detail=(
+                    f"; existing_decompressed_sha256={hashlib.sha256(gzip.decompress(existing)).hexdigest()}"
+                    f" target_decompressed_sha256={hashlib.sha256(gzip.decompress(content)).hexdigest()}")
+            except Exception:
+                detail="; gzip_decompression_failed_while_comparing"
+        raise RuntimeError(
+            f"immutable destination already exists with different exact bytes: {path}"
+            f"; existing_sha256={hashlib.sha256(existing).hexdigest()}"
+            f" target_sha256={hashlib.sha256(content).hexdigest()}{detail}")
+    return sha
 
 def blob(repo,content,h):
     d=req("POST",f"{API}/repos/{repo}/git/blobs",h,json={
@@ -95,15 +110,17 @@ def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
     return receipts
 
 def atomic_commit(repo,files,message,h):
-    # Immutable entries may already exist after an earlier successful retry.
-    pending=[]
-    for item in files:
-        if item.get("immutable") and same_existing(repo,item["path"],item["content"],h,item.get("gzip",False)):
-            continue
-        pending.append(item)
-    if not pending:return {"idempotent":True,"commit_sha":None,"paths":[x["path"] for x in files]}
-
-    blob_shas={x["path"]:blob(repo,x["content"],h) for x in pending}
+    # Immutable collisions are accepted only on exact-byte equality. Existing
+    # immutable blobs are still included in the candidate tree/readback so a
+    # recovery commit verifies the complete transfer, not only latest pointers.
+    pending=list(files)
+    blob_shas={}
+    for item in pending:
+        existing_sha=None
+        if item.get("immutable"):
+            existing_sha=same_existing(
+                repo,item["path"],item["content"],h,item.get("gzip",False))
+        blob_shas[item["path"]]=existing_sha or blob(repo,item["content"],h)
     last=None
     for attempt in range(4):
         try:
@@ -161,14 +178,21 @@ def main():
         "estimated_whole_nominal_intervals_without_attempt":None,
     }
     if previous and previous.get("generated_at_utc"):
-        prev_time=parse_time(previous["generated_at_utc"])
-        gap=max(0.0,(when-prev_time).total_seconds()/60)
-        continuity.update(
-            previous_attempt_generated_at_utc=prev_time.isoformat(),
-            interval_since_previous_attempt_minutes=round(gap,2),
-            interval_exceeds_1_5x_nominal=gap>nominal_minutes*1.5,
-            estimated_whole_nominal_intervals_without_attempt=max(0,int(gap//nominal_minutes)-1),
-        )
+        # If the data commit of this exact attempt already reached main but the
+        # receipt publication failed, preserve the original continuity fields
+        # so the immutable integrity bytes remain reproducible on retry.
+        if (previous.get("generated_at_utc")==report.get("generated_at_utc")
+                and isinstance(previous.get("invocation_continuity"),dict)):
+            continuity=dict(previous["invocation_continuity"])
+        else:
+            prev_time=parse_time(previous["generated_at_utc"])
+            gap=max(0.0,(when-prev_time).total_seconds()/60)
+            continuity.update(
+                previous_attempt_generated_at_utc=prev_time.isoformat(),
+                interval_since_previous_attempt_minutes=round(gap,2),
+                interval_exceeds_1_5x_nominal=gap>nominal_minutes*1.5,
+                estimated_whole_nominal_intervals_without_attempt=max(0,int(gap//nominal_minutes)-1),
+            )
     report["invocation_continuity"]=continuity
     report["private_transfer_protocol"]={
         "method_version":"private-transfer-readback-v1",
@@ -210,6 +234,41 @@ def main():
             {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest_success.json","content":report_raw,"immutable":False},
             {"path":f"reports/collector-health/{args.kind}/latest_success.md","content":md_raw,"immutable":False},
         ]
+    receipt_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/{day}/receipt_{stamp}.json"
+
+    # A rerun after a fully completed transfer is idempotent. Validate the
+    # persisted receipt against the current immutable source bytes before exit.
+    existing_receipt=decoded_json_content(content_meta(repo,receipt_path,h))
+    if existing_receipt is not None:
+        expected_payload_sha=(report.get("private_payload") or {}).get("source_sha256")
+        if (existing_receipt.get("kind")!=args.kind
+                or existing_receipt.get("stamp")!=stamp
+                or existing_receipt.get("readback_verified") is not True
+                or existing_receipt.get("payload_source_sha256")!=expected_payload_sha):
+            raise RuntimeError(f"existing transfer receipt conflicts with this attempt: {receipt_path}")
+        rb={x.get("path"):x for x in (existing_receipt.get("readback") or []) if isinstance(x,dict)}
+        for item in files:
+            if not item.get("immutable"):
+                continue
+            existing_sha=same_existing(repo,item["path"],item["content"],h,item.get("gzip",False))
+            if not existing_sha:
+                raise RuntimeError(f"receipt exists but immutable transfer path is missing: {item['path']}")
+            proof=rb.get(item["path"])
+            if not proof or proof.get("exact_bytes_match") is not True:
+                raise RuntimeError(f"receipt lacks exact-byte proof for immutable path: {item['path']}")
+            if proof.get("sha256")!=hashlib.sha256(item["content"]).hexdigest():
+                raise RuntimeError(f"receipt SHA-256 does not match immutable bytes: {item['path']}")
+            if item.get("gzip") and item.get("source_sha256") and proof.get("decompressed_sha256")!=item["source_sha256"]:
+                raise RuntimeError(f"receipt decompressed SHA-256 mismatch for immutable payload: {item['path']}")
+        print(json.dumps({
+            "idempotent":True,"kind":args.kind,"stamp":stamp,
+            "transfer_receipt_path":receipt_path,
+            "verified_data_commit_sha":existing_receipt.get("verified_data_commit_sha"),
+            "readback_verified":True,
+            "reason":"existing_receipt_and_immutable_bytes_reverified",
+        },indent=2))
+        return
+
     result=atomic_commit(repo,files,f"collector: ingest {args.kind} attempt {stamp}",h)
     result.update({"kind":args.kind,"stamp":stamp})
 
@@ -233,7 +292,6 @@ def main():
             "publication_semantics":"The verified data commit was read back before publication; this receipt is a child commit recording that completed verification.",
         }
         receipt_raw=(json.dumps(receipt,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
-        receipt_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/{day}/receipt_{stamp}.json"
         receipt_files=[
             {"path":receipt_path,"content":receipt_raw,"immutable":True},
             {"path":f"data/inbox/public_collector/transfer_receipts/{args.kind}/latest.json","content":receipt_raw,"immutable":False},
