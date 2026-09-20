@@ -11,6 +11,7 @@ to the private repository.
 
 - Model due-check: hourly at minute 23 UTC. A full provider acquisition is started only when the last successful private model transfer is at least 150 minutes old; read failures are fail-open.
 - SVG/SKM due-check: at minutes 13, 33 and 53 UTC. A real WeatherLink/SKM acquisition is started only when the last successful SVG transfer is at least 50 minutes old; read failures are fail-open.
+- Wunstorf/ETNW secondary acquisition: 00:47, 04:47, 10:47, 16:47 and 22:47 UTC. Both child sources are independently audited and transferred; only after both integrity gates pass is one `secondary-batch-receipt-v1` published to the private repository.
 - Code changes normally run a reduced model smoke test only; smoke tests never transfer data. Explicit `[full-model-validation]` / `[full-svg-validation]` validation commits exercise the full production transfer path.
 
 ## Sources
@@ -25,6 +26,8 @@ The collector currently retrieves:
 - NOAA/NCEP GEFS control
 - WeatherLink v2 station 42374 (SVG)
 - MeteoMap station 898 (SKM), optional legacy diagnostic only; its failure never gates SVG or model evaluation
+- DWD station 05715 Wunstorf, historical land reference
+- ETNW METAR from AviationWeather.gov, current Wunstorf redundancy
 
 It performs only source extraction and basic unit/metadata normalization needed
 to preserve an unambiguous transfer bundle. Forecast weighting, traffic-light
@@ -51,6 +54,7 @@ permissions.
 - Transfer bundles are gzip-compressed and written directly to the private
   repository below `data/inbox/public_collector/`.
 - Every publication uses `private-transfer-readback-v2`: the unpublished private commit tree and blobs are read back byte-for-byte before `main` is moved. Gzip payloads are decompressed and checked against the SHA-256 recorded by the audit before transfer. Mutable latest pointers are monotonic by source generation time, and `latest_success` is published only in the verified receipt-bearing commit.
+- Wunstorf and ETNW child receipts remain independently auditable, but private canonical promotion is triggered only by `data/inbox/public_collector/transfer_receipts/secondary/latest.json`. The batch finalizer verifies both current child receipts against the same collector invocation before publishing this transaction boundary.
 - Runtime Python wheels are version- and SHA-256-pinned in `requirements-runtime.txt`; GitHub-maintained actions are pinned to full commit SHAs.
 - Scheduled workflows run from the default branch.
 - Pull requests from forks do not receive repository secrets.
