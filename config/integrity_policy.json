@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "method_version": "collector-integrity-v1.4",
+  "method_version": "collector-integrity-v1.5",
   "model_policy": {
     "spot": {
       "latitude": 52.4942,

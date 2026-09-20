@@ -10,7 +10,7 @@ FAMILY={
     "ICON-D2":"DWD-ICON","ICON-D2-EPS":"DWD-ICON","ICON-EU":"DWD-ICON",
     "ECMWF-IFS":"ECMWF","GFS":"GFS","GEFS-control":"GFS",
 }
-POLICY_VERSION="collector-integrity-v1.4"
+POLICY_VERSION="collector-integrity-v1.5"
 
 def dt(v):
     if not v:return None
@@ -32,6 +32,93 @@ def provider_max(model,run_hour,cfg):
 
 def desired_leads(model,cfg):
     return [int(x) for x in cfg["model_policy"]["project_desired_leads"][model]]
+
+def audit_eps_hourly_source(source,run,expected_members=20):
+    failures=[];summary=None
+    if not isinstance(source,dict):
+        return [{"reason":"ensemble_hourly_source_missing"}],summary
+    if source.get("model")!="dwd_icon_d2_eps":
+        failures.append({"reason":"hourly_source_model_mismatch","value":source.get("model")})
+    if source.get("cycle_evidence")!="stable_provider_metadata_association":
+        failures.append({"reason":"hourly_source_cycle_evidence_invalid","value":source.get("cycle_evidence")})
+    sr=dt(source.get("run_time_utc"))
+    if sr is None or run is None or sr!=run:
+        failures.append({"reason":"hourly_source_run_time_mismatch",
+                         "hourly_run_time_utc":sr.isoformat() if sr else None,
+                         "eps_run_time_utc":run.isoformat() if run else None})
+    raw_times=source.get("times_utc")
+    times=[dt(x) for x in raw_times] if isinstance(raw_times,list) else []
+    if not times or any(x is None for x in times):
+        failures.append({"reason":"hourly_source_time_axis_invalid"})
+        times=[]
+    elif any(x.minute or x.second or x.microsecond for x in times):
+        failures.append({"reason":"hourly_source_non_hour_boundary"})
+    elif times!=sorted(times) or len(times)!=len(set(times)):
+        failures.append({"reason":"hourly_source_time_axis_unordered_or_duplicate"})
+    columns=source.get("columns") if isinstance(source.get("columns"),dict) else {}
+    expected_ids=list(range(expected_members))
+    def members(field):
+        raw=columns.get(field)
+        if not isinstance(raw,dict):return {}
+        out={}
+        for key,values in raw.items():
+            try:member=int(key)
+            except (TypeError,ValueError):continue
+            out[member]=values
+        return out
+    core={field:members(field) for field in ("wind_speed_10m","wind_direction_10m","wind_gusts_10m")}
+    for field,vals in core.items():
+        if sorted(vals)!=expected_ids:
+            failures.append({"reason":"hourly_source_member_identity_mismatch",
+                             "field":field,"expected_member_ids":expected_ids,"received_member_ids":sorted(vals)})
+        for member,values in vals.items():
+            if not isinstance(values,list) or (times and len(values)!=len(times)):
+                failures.append({"reason":"hourly_source_column_length_mismatch",
+                                 "field":field,"member":member,
+                                 "values":len(values) if isinstance(values,list) else None,
+                                 "times":len(times)})
+    missing_hours=[];invalid_values=[]
+    if run and times:
+        index={x:i for i,x in enumerate(times)}
+        for hour in range(49):
+            target=run+timedelta(hours=hour);i=index.get(target)
+            if i is None:
+                missing_hours.append(hour);continue
+            for field,vals in core.items():
+                for member in expected_ids:
+                    values=vals.get(member)
+                    value=values[i] if isinstance(values,list) and i<len(values) else None
+                    valid=finite(value)
+                    if field in ("wind_speed_10m","wind_gusts_10m"):valid=valid and float(value)>=0
+                    if field=="wind_direction_10m":valid=valid and 0<=float(value)<=360
+                    if not valid:
+                        invalid_values.append({"lead_hour":hour,"field":field,"member":member,"value":value})
+                        if len(invalid_values)>=20:break
+                if len(invalid_values)>=20:break
+            if len(invalid_values)>=20:break
+    if missing_hours:
+        failures.append({"reason":"hourly_source_required_hours_missing","missing_lead_hours":missing_hours})
+    if invalid_values:
+        failures.append({"reason":"hourly_source_wind_core_values_invalid","examples":invalid_values,
+                         "example_limit":20})
+    requested=source.get("requested_coordinate") if isinstance(source.get("requested_coordinate"),dict) else {}
+    returned=source.get("returned_coordinate") if isinstance(source.get("returned_coordinate"),dict) else {}
+    rlat=returned.get("latitude");rlon=returned.get("longitude")
+    if requested.get("latitude")!=52.4942 or requested.get("longitude")!=9.3418:
+        failures.append({"reason":"hourly_source_requested_coordinate_mismatch","value":requested})
+    if not finite(rlat) or not finite(rlon) or abs(float(rlat)-52.4942)>.05 or abs(float(rlon)-9.3418)>.08:
+        failures.append({"reason":"hourly_source_returned_coordinate_implausible","value":returned})
+    summary={
+        "present":True,"run_time_utc":sr.isoformat() if sr else None,
+        "time_count":len(times),"required_run_through_48h_complete":not missing_hours and bool(times),
+        "expected_member_count":expected_members,
+        "response_sha256":source.get("response_sha256"),
+        "retrieved_at_utc":source.get("retrieved_at_utc"),
+        "requested_coordinate":requested,"returned_coordinate":returned,
+        "cycle_evidence":source.get("cycle_evidence"),
+        "failure_count":len(failures),
+    }
+    return failures,summary
 
 def make_report(kind,now,sources,issues,usable,extra):
     counts=Counter(x["severity"] for x in issues)
@@ -111,13 +198,24 @@ def audit_models(path,cfg,now):
             expected=[x for x in desired_leads(model,cfg) if pmax is not None and x<=pmax]
             project_gap=[x for x in desired_leads(model,cfg) if pmax is not None and x>pmax]
         got=sorted(lead_rows);missing=sorted(set(expected)-set(got));extra=sorted(set(got)-set(expected))
-        field_failures=[];timestamp_failures=[];critical_source_errors=[];optional_source_warnings=[];outside_horizon_records=[]
+        field_failures=[];timestamp_failures=[];coordinate_failures=[];coordinate_points=set();critical_source_errors=[];optional_source_warnings=[];outside_horizon_records=[]
         expected_set=set(expected)
         optional_fields=set(cfg["model_policy"].get("optional_weather_context_fields",[]))
         for lead,r in sorted(lead_rows.items()):
             in_provider_scope=lead in expected_set
             if not in_provider_scope:
                 outside_horizon_records.append({"lead_hours":lead,"reason":"outside_selected_provider_cycle_horizon"})
+            pt=r.get("forecast_coordinate_or_grid_point") if isinstance(r.get("forecast_coordinate_or_grid_point"),dict) else {}
+            plat=pt.get("latitude",pt.get("lat"));plon=pt.get("longitude",pt.get("lon"))
+            if in_provider_scope:
+                if (not finite(plat) or not finite(plon)
+                        or abs(float(plat)-float(expected_spot["latitude"]))>0.30
+                        or abs(float(plon)-float(expected_spot["longitude"]))>0.30):
+                    coordinate_failures.append({
+                        "lead_hours":lead,"reason":"missing_or_implausible_forecast_grid_point",
+                        "forecast_coordinate_or_grid_point":pt})
+                else:
+                    coordinate_points.add((round(float(plat),6),round(float(plon),6)))
             der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
             req=list(cfg["model_policy"]["required_derived_fields"])
             if model in cfg["model_policy"]["required_gust_models"]:req.append("gust_ms")
@@ -156,7 +254,15 @@ def audit_models(path,cfg,now):
                     if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
                         record_problem({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")},key)
 
+        if len(coordinate_points)>1:
+            coordinate_failures.append({
+                "reason":"forecast_grid_point_changes_within_model_run",
+                "observed_points":[{"latitude":x[0],"longitude":x[1]} for x in sorted(coordinate_points)]})
+        coordinate_summary=(
+            {"latitude":next(iter(coordinate_points))[0],"longitude":next(iter(coordinate_points))[1]}
+            if len(coordinate_points)==1 else None)
         identity_failures=[];member_failures=[];identity_summary=None;member_count_by_lead={}
+        hourly_source_failures=[];hourly_source_summary=None
         if model=="ICON-D2-EPS" and recs:
             ecfg=(cfg["model_policy"].get("ensemble_identity") or {}).get("ICON-D2-EPS") or {}
             expected_members=int(ecfg.get("expected_member_count",20))
@@ -246,6 +352,9 @@ def audit_models(path,cfg,now):
                                             "derived_member_count":der.get("ensemble_member_count"),
                                             "statistics_member_count":stat.get("member_count"),
                                             "incomplete_wind_core_members":incomplete_core_members})
+            if mode=="production":
+                hourly_source_failures,hourly_source_summary=audit_eps_hourly_source(
+                    d.get("ensemble_hourly_source"),run,expected_members)
         model_qerrors=[str(x) for x in qerrors if str(x).startswith(model+":")]
         if len(run_values)==0:
             issues.append(issue("MODEL_RUN_TIME_NOT_PRESENT","ERROR",model,"run_identity",
@@ -281,6 +390,10 @@ def audit_models(path,cfg,now):
             issues.append(issue("REQUIRED_DERIVED_FIELDS_UNAVAILABLE","ERROR",model,"fields",
                 "Wind data required by the private integrity gate could not be derived for specific leads.",
                 affected_leads=field_failures))
+        if coordinate_failures:
+            issues.append(issue("MODEL_FORECAST_GRID_IDENTITY_INVALID","ERROR",model,"grid_identity",
+                "The actual forecast extraction/grid point is missing, implausible or changes between required leads.",
+                canonical_requested_spot=expected_spot,failures=coordinate_failures))
         if timestamp_failures:
             issues.append(issue("FORECAST_TIMESTAMP_OR_LEAD_INCONSISTENCY","ERROR",model,"timestamps",
                 "Declared run/valid/lead metadata are internally inconsistent for specific records.",
@@ -301,6 +414,10 @@ def audit_models(path,cfg,now):
             issues.append(issue("ENSEMBLE_MEMBER_SET_INCOMPLETE","ERROR",model,"ensemble_members",
                 "ICON-D2-EPS must contain exactly the fixed 20 member identities at every required lead.",
                 affected_leads=member_failures))
+        if hourly_source_failures:
+            issues.append(issue("ENSEMBLE_HOURLY_SOURCE_INVALID_FOR_V15","ERROR",model,"hourly_ensemble_source",
+                "The production bundle does not contain one complete, temporally aligned 20-member hourly ICON-D2-EPS source for v15.",
+                failures=hourly_source_failures))
         provider_attempts=[x for x in all_attempts if x.get("model")==model]
         attempt_stages=sorted({str(x.get("stage") or "unknown") for x in provider_attempts})
         for stage in attempt_stages:
@@ -338,16 +455,20 @@ def audit_models(path,cfg,now):
             "expected_collection_leads_hours":expected,"received_leads_hours":got,"missing_expected_leads_hours":missing,
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
+            "forecast_coordinate_or_grid_point":coordinate_summary,
+            "forecast_grid_identity_failures":coordinate_failures,
             "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
             "provider_attempts":provider_attempts,
             "ensemble_run_identity":identity_summary,
             "ensemble_member_count_by_lead":member_count_by_lead,
             "ensemble_run_identity_failures":identity_failures,
             "ensemble_member_failures":member_failures,
+            "ensemble_hourly_source":hourly_source_summary,
+            "ensemble_hourly_source_failures":hourly_source_failures,
             "optional_weather_context_warnings":optional_source_warnings,
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
-            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures]) and run is not None,
+            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,coordinate_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures,hourly_source_failures]) and run is not None,
             "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 

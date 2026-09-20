@@ -5,7 +5,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import tempfile
 
-from audit_integrity import audit_models,audit_svg,audit_skm
+from audit_integrity import audit_models,audit_svg,audit_skm,audit_eps_hourly_source
 from check_collection_due import evaluate_latest_success
 
 POLICY=json.loads(Path("config/integrity_policy.json").read_text(encoding="utf-8"))
@@ -27,6 +27,7 @@ class IntegrityAuditTests(unittest.TestCase):
                     "model":model,"run_time_utc":run.isoformat(),
                     "forecast_lead_hours":lead,
                     "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
+                    "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.34,"selection":"test"},
                     "derived":der,
                 }
                 if model=="ICON-D2-EPS":
@@ -54,6 +55,40 @@ class IntegrityAuditTests(unittest.TestCase):
             "spot":{"lat":52.4942,"lon":9.3418},
             "models":models,"quality":{"errors":[]}
         }
+
+
+    def test_v15_hourly_source_requires_exact_hourly_20_member_core(self):
+        run=datetime(2026,9,20,0,0,tzinfo=timezone.utc)
+        times=[(run+timedelta(hours=h)).isoformat() for h in range(49)]
+        columns={}
+        for field,value in (("wind_speed_10m",5.0),("wind_direction_10m",270.0),("wind_gusts_10m",7.0)):
+            columns[field]={str(m):[value]*49 for m in range(20)}
+        source={
+            "model":"dwd_icon_d2_eps",
+            "cycle_evidence":"stable_provider_metadata_association",
+            "run_time_utc":run.isoformat(),
+            "retrieved_at_utc":(run+timedelta(hours=4)).isoformat(),
+            "response_sha256":"abc",
+            "times_utc":times,
+            "columns":columns,
+            "requested_coordinate":{"latitude":52.4942,"longitude":9.3418},
+            "returned_coordinate":{"latitude":52.5,"longitude":9.34},
+        }
+        failures,summary=audit_eps_hourly_source(source,run,20)
+        self.assertEqual(failures,[],failures)
+        self.assertTrue(summary["required_run_through_48h_complete"])
+
+        broken=json.loads(json.dumps(source))
+        del broken["times_utc"][17]
+        for members in broken["columns"].values():
+            for values in members.values():del values[17]
+        failures,_=audit_eps_hourly_source(broken,run,20)
+        self.assertTrue(any(x["reason"]=="hourly_source_required_hours_missing" for x in failures),failures)
+
+        broken=json.loads(json.dumps(source))
+        del broken["columns"]["wind_gusts_10m"]["19"]
+        failures,_=audit_eps_hourly_source(broken,run,20)
+        self.assertTrue(any(x["reason"]=="hourly_source_member_identity_mismatch" for x in failures),failures)
 
     def test_complete_reduced_model_bundle_passes(self):
         now=datetime.now(timezone.utc)
@@ -85,6 +120,7 @@ class IntegrityAuditTests(unittest.TestCase):
                 "model":"ICON-EU","run_time_utc":run.isoformat(),
                 "forecast_lead_hours":lead,
                 "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
+                "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.34,"selection":"test"} if lead<=51 else None,
                 "values":{}
             }
             if lead<=51:
@@ -158,6 +194,26 @@ class IntegrityAuditTests(unittest.TestCase):
         self.assertEqual(len(xs),1,r["issues"])
         reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
         self.assertIn("source_run_identity_missing_on_some_records",reasons)
+
+    def test_model_grid_point_change_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        d["models"]["GFS"][1]["forecast_coordinate_or_grid_point"]={"latitude":52.5,"longitude":9.25}
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="MODEL_FORECAST_GRID_IDENTITY_INVALID" and x["source"]=="GFS"]
+        self.assertEqual(len(xs),1,r["issues"])
+        reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
+        self.assertIn("forecast_grid_point_changes_within_model_run",reasons)
+        self.assertFalse(r["sources"]["GFS"]["provider_cycle_complete"])
+
+    def test_model_grid_point_missing_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        del d["models"]["ECMWF-IFS"][0]["forecast_coordinate_or_grid_point"]
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="MODEL_FORECAST_GRID_IDENTITY_INVALID" and x["source"]=="ECMWF-IFS" for x in r["issues"]))
 
     def test_model_spot_mismatch_is_hard_error(self):
         now=datetime.now(timezone.utc);d=self.model_bundle()

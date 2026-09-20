@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch DWD core models ICON-EU and ICON-D2-EPS for Mardorf."""
-import argparse,bz2,json,math,re,statistics,subprocess,tempfile,os,time
+import argparse,bz2,hashlib,json,math,re,statistics,subprocess,tempfile,os,time
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -22,9 +22,14 @@ EPS_EXPECTED_MEMBERS=20
 EPS_SETTLING_SECONDS=600
 
 
+class NearestRows(list):
+    pass
+
 def nearest(path):
     p=subprocess.run(['grib_ls','-l',f'{LAT},{LON},1','-p','shortName,stepRange',str(path)],capture_output=True,text=True,check=True)
-    rows=[]
+    m=re.search(r'Grid Point chosen .*?latitude=([+-]?\d+(?:\.\d+)?) longitude=([+-]?\d+(?:\.\d+)?)',p.stdout)
+    if not m: raise RuntimeError(f'Cannot identify ecCodes selected grid point for {path}: {p.stdout[:700]}')
+    rows=NearestRows();rows.point={'latitude':float(m.group(1)),'longitude':float(m.group(2)),'selection':'ecCodes_nearest_grid_point'}
     for line in p.stdout.splitlines():
         x=line.strip().split()
         if len(x)>=3:
@@ -101,16 +106,17 @@ def fetch_icon_eu(leads,required_cycle_lead=None):
     params=['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']
     with tempfile.TemporaryDirectory() as td:
         for lead in leads:
-            vals={}; urls=[]
+            vals={}; urls=[]; point=None
             for param in params:
                 try:
                     u=find_dwd_file(model,cycle,lead,param); urls.append(u)
                     r=S.get(u,timeout=90); r.raise_for_status(); p=Path(td)/f'eu_{param}_{lead}.grib2'; p.write_bytes(bz2.decompress(r.content))
                     assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU {param} lead {lead}')
-                    vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
+                    rows=nearest(p); point=point or rows.point
+                    vals[param]=[{'stepRange':s,'value':v} for _,s,v in rows]
                 except Exception as e: vals[param]={'error':f'{type(e).__name__}: {e}'}
             one=lambda p: vals[p][0]['value'] if isinstance(vals.get(p),list) and vals[p] else None
-            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'cycle_selection':selection}
+            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'cycle_selection':selection,'forecast_coordinate_or_grid_point':point}
             if one('u_10m') is not None and one('v_10m') is not None: rec['derived']=derived(one('u_10m'),one('v_10m'),one('vmax_10m'))
             out.append(rec)
     return out
@@ -170,19 +176,101 @@ def fetch_eps_metadata():
 def _meta_dt(meta,key):
     return datetime.fromisoformat(meta[key]).astimezone(timezone.utc)
 
-def fetch_icon_d2_eps(leads):
-    """Fetch one stable, explicitly identified Open-Meteo DWD ICON-D2-EPS run.
+def _explicit_utc_times(times):
+    out=[]
+    for value in times:
+        x=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        x=x.astimezone(timezone.utc) if x.tzinfo else x.replace(tzinfo=timezone.utc)
+        if x.minute or x.second or x.microsecond:
+            raise RuntimeError(f'ICON-D2-EPS non-hourly timestamp: {value}')
+        out.append(x.isoformat())
+    if out!=sorted(out) or len(out)!=len(set(out)):
+        raise RuntimeError('ICON-D2-EPS hourly time axis is unordered or contains duplicates')
+    return out
 
-    Run identity comes from Open-Meteo's model metadata. The API is queried only
-    after the documented 10-minute settling period, metadata is re-read after the
-    ensemble request, and the run must be unchanged. The corresponding DWD cycle
-    and farthest requested lead must also exist in DWD Open Data.
-    """
+
+def _hourly_source(payload,r,meta_before,meta_after,identity,base,response_retrieved,speed,direction,gust,precip,cape):
+    if payload.get('utc_offset_seconds')!=0:
+        raise RuntimeError(f'ICON-D2-EPS source must be UTC; utc_offset_seconds={payload.get("utc_offset_seconds")}')
+    units=payload.get('hourly_units') or {}
+    if units.get('wind_speed_10m')!='m/s' or units.get('wind_gusts_10m')!='m/s':
+        raise RuntimeError(f'ICON-D2-EPS unexpected wind units: {units}')
+    lat=payload.get('latitude');lon=payload.get('longitude')
+    if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)):
+        raise RuntimeError('ICON-D2-EPS returned coordinate missing')
+    if abs(float(lat)-LAT)>.05 or abs(float(lon)-LON)>.08:
+        raise RuntimeError(f'ICON-D2-EPS returned coordinate implausible: {(lat,lon)}')
+    times=_explicit_utc_times((payload.get('hourly') or {}).get('time') or [])
+    columns={
+        'wind_speed_10m':speed,'wind_gusts_10m':gust,'wind_direction_10m':direction,
+        'precipitation':precip,'cape':cape,
+    }
+    if not times:
+        raise RuntimeError('ICON-D2-EPS hourly time axis empty')
+    for field,members in columns.items():
+        for member,values in members.items():
+            if len(values)!=len(times):
+                raise RuntimeError(
+                    f'ICON-D2-EPS hourly length mismatch field={field} member={member}: '
+                    f'{len(values)} != {len(times)}')
+    time_index={t:i for i,t in enumerate(times)}
+    expected_ids=list(range(EPS_EXPECTED_MEMBERS))
+    for hour in range(0,49):
+        key=(base+timedelta(hours=hour)).isoformat()
+        i=time_index.get(key)
+        if i is None:
+            raise RuntimeError(f'ICON-D2-EPS v15 hourly timestamp missing: {key}')
+        for field,members in (('wind_speed_10m',speed),('wind_direction_10m',direction),('wind_gusts_10m',gust)):
+            if sorted(members)!=expected_ids:
+                raise RuntimeError(f'ICON-D2-EPS v15 member set mismatch for {field}: {sorted(members)}')
+            for member in expected_ids:
+                value=members[member][i]
+                if not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(float(value)):
+                    raise RuntimeError(
+                        f'ICON-D2-EPS v15 non-finite {field} member={member} time={key}: {value}')
+                if field!='wind_direction_10m' and float(value)<0:
+                    raise RuntimeError(
+                        f'ICON-D2-EPS v15 negative {field} member={member} time={key}: {value}')
+    response_hash=hashlib.sha256(
+        json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+    ).hexdigest()
+    return {
+        'schema_version':1,
+        'method_version':'hourly-member-ecc-window-v15',
+        'model':'dwd_icon_d2_eps',
+        'source_class':'Open-Meteo named-model ensemble extraction',
+        'source_url':r.url,
+        'retrieved_at_utc':response_retrieved.isoformat(),
+        'response_sha256':response_hash,
+        'requested_coordinate':{'latitude':LAT,'longitude':LON},
+        'returned_coordinate':{'latitude':float(lat),'longitude':float(lon)},
+        'provider_metadata_before':meta_before,
+        'provider_metadata_after':meta_after,
+        'cycle_evidence':'stable_provider_metadata_association',
+        'response_bound_run_identity_verified':False,
+        'native_grid_parity_verified':False,
+        'run_time_utc':base.isoformat(),
+        'times_utc':times,
+        'columns':columns,
+        'member_identity':'provider_member_number_in_one_response_control_is_zero',
+        'dwd_cycle_confirmation_url':identity['dwd_cycle_confirmation_url'],
+        'source_run_identity':identity,
+        'semantics':{
+            'wind_speed_10m':'instantaneous',
+            'wind_gusts_10m':'preceding_hour_max',
+            'precipitation':'preceding_hour_sum',
+            'cape':'instantaneous_not_thunder_probability',
+        },
+    }
+
+
+def fetch_icon_d2_eps_bundle(leads):
+    """Fetch one stable ICON-D2-EPS response and retain both 3-hour records and v15 hourly trajectories."""
     meta_before=fetch_eps_metadata()
     base=_meta_dt(meta_before,'last_run_initialisation_time_utc')
     availability=_meta_dt(meta_before,'last_run_availability_time_utc')
-    retrieved=datetime.now(timezone.utc)
-    settle_age=(retrieved-availability).total_seconds()
+    request_started=datetime.now(timezone.utc)
+    settle_age=(request_started-availability).total_seconds()
     if settle_age < EPS_SETTLING_SECONDS:
         raise RuntimeError(
             f'Open-Meteo ICON-D2-EPS run not settled: run={base.isoformat()} '
@@ -200,11 +288,10 @@ def fetch_icon_d2_eps(leads):
        'models':'dwd_icon_d2_eps','past_days':1,'forecast_days':4,
        'wind_speed_unit':'ms','timezone':'GMT'}
     r=S.get(OPEN_METEO_D2_EPS_API,params=q,timeout=90);r.raise_for_status();payload=r.json()
+    response_retrieved=datetime.now(timezone.utc)
     hourly=payload.get('hourly') or {};times=hourly.get('time') or []
     speed=member_map(hourly,'wind_speed_10m');direction=member_map(hourly,'wind_direction_10m')
     gust=member_map(hourly,'wind_gusts_10m');precip=member_map(hourly,'precipitation');cape=member_map(hourly,'cape')
-    # Wind speed, direction and gust are the wind-critical trajectory. A member
-    # is not complete merely because speed/direction exist.
     member_ids=sorted(set(speed)&set(direction)&set(gust))
     expected_ids=list(range(EPS_EXPECTED_MEMBERS))
     if member_ids!=expected_ids:
@@ -235,6 +322,9 @@ def fetch_icon_d2_eps(leads):
         'expected_member_ids':expected_ids,
         'source_timestamp_semantics':'Open-Meteo last_run_initialisation_time is the model reference/initialisation time',
     }
+    hourly_source=_hourly_source(
+        payload,r,meta_before,meta_after,identity,base,response_retrieved,
+        speed,direction,gust,precip,cape)
 
     index={t:i for i,t in enumerate(times)};out=[]
     for lead in leads:
@@ -259,7 +349,9 @@ def fetch_icon_d2_eps(leads):
         rec={'model':'ICON-D2-EPS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,
              'valid_time_utc':valid.isoformat(),
              'source':'Open-Meteo Ensemble API named model dwd_icon_d2_eps; DWD cycle independently confirmed',
-             'source_url':r.url,'source_run_identity':identity,'members':members,'ensemble_statistics':stats}
+             'source_url':r.url,'source_run_identity':identity,
+             'forecast_coordinate_or_grid_point':hourly_source['returned_coordinate'],
+             'members':members,'ensemble_statistics':stats}
         if rec_error:
             rec['error_type']='EnsembleCompletenessError';rec['error_message']=rec_error
         elif len(members)==EPS_EXPECTED_MEMBERS:
@@ -271,8 +363,11 @@ def fetch_icon_d2_eps(leads):
                 der['gust_factor']=round(stats['gust_ms_median']/stats['wind_speed_ms_median'],2) if stats['wind_speed_ms_median']>.2 else None
             rec['derived']=der
         out.append(rec)
-    return out
+    return out,hourly_source
 
+
+def fetch_icon_d2_eps(leads):
+    return fetch_icon_d2_eps_bundle(leads)[0]
 
 def write_consolidated_report(rep,data,now):
     names=['ICON-D2','ICON-EU','ECMWF-IFS','GFS','GEFS-control','ICON-D2-EPS'];q=data.get('quality',{})
@@ -288,8 +383,17 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('--test',action='store_true');a=ap.parse_args();leads=[0,12,24,36,48] if a.test else list(range(0,49,3))
     p=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'));data=json.loads(p.read_text());errors=[]
     for name,fn in [('ICON-EU',fetch_icon_eu),('ICON-D2-EPS',fetch_icon_d2_eps)]:
-        try:data['models'][name]=fn(leads)
-        except Exception as e:data['models'][name]=[];errors.append(f'{name}: {type(e).__name__}: {e}')
+        try:
+            if name=='ICON-D2-EPS':
+                rows,hourly_source=fetch_icon_d2_eps_bundle(leads)
+                data['models'][name]=rows
+                data['ensemble_hourly_source']=hourly_source
+            else:
+                data['models'][name]=fn(leads)
+        except Exception as e:
+            data['models'][name]=[]
+            if name=='ICON-D2-EPS':data.pop('ensemble_hourly_source',None)
+            errors.append(f'{name}: {type(e).__name__}: {e}')
         good=sum('derived' in x for x in data['models'][name]);complete=(len(data['models'][name])==len(leads) and good==len(leads));data['quality'][name]={'records':len(data['models'][name]),'derived_records':good,'success':complete,'complete_requested_horizon':complete}
     data['quality']['successful_models']=[n for n,q in data['quality'].items() if isinstance(q,dict) and q.get('success')];data['quality'].setdefault('errors',[]);data['quality']['errors']+=errors;data['dwd_additional_retrieved_at_utc']=datetime.now(timezone.utc).isoformat()
     data['retrieved_at_utc']=data['dwd_additional_retrieved_at_utc']

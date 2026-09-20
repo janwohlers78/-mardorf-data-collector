@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Add ECMWF IFS Open Data and NOAA GEFS control raw point forecasts to latest snapshot."""
-import argparse,json,math,subprocess,tempfile,os
+import argparse,json,math,re,subprocess,tempfile,os
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -12,9 +12,14 @@ ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 ECMWF_PARAMS=['10u','10v','10fg','10fg3','tp','mucape']
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
+class NearestRows(list):
+ pass
+
 def nearest(path):
  p=subprocess.run(['grib_ls','-l',f'{LAT},{LON},1','-p','shortName,stepRange',str(path)],capture_output=True,text=True,check=True)
- rows=[]
+ m=re.search(r'Grid Point chosen .*?latitude=([+-]?\d+(?:\.\d+)?) longitude=([+-]?\d+(?:\.\d+)?)',p.stdout)
+ if not m:raise RuntimeError(f'Cannot identify ecCodes selected grid point for {path}: {p.stdout[:700]}')
+ rows=NearestRows();rows.point={'latitude':float(m.group(1)),'longitude':float(m.group(2)),'selection':'ecCodes_nearest_grid_point'}
  for line in p.stdout.splitlines():
   x=line.strip().split()
   if len(x)>=3:
@@ -48,7 +53,8 @@ def fetch_ifs(leads):
   client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
   result=client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target))
   run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}
-  for n,s,v in nearest(target):
+  rows=nearest(target);point=rows.point
+  for n,s,v in rows:
    lead=step_end(s)
    if lead not in bylead: continue
    bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
@@ -62,6 +68,7 @@ def fetch_ifs(leads):
    rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,
         'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),
         'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,
+        'forecast_coordinate_or_grid_point':point,
         'source_request':{'steps':leads,'retrieved_run_time_utc':run.isoformat()}}
    if u is not None and v is not None:rec['derived']=derived(u,v,g)
    out.append(rec)
