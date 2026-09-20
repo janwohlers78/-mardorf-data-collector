@@ -4,7 +4,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import tempfile
 
-from audit_integrity import audit_models,audit_svg
+from audit_integrity import audit_models,audit_svg,audit_skm
 
 POLICY=json.loads(Path("config/integrity_policy.json").read_text(encoding="utf-8"))
 FAMILY_MODELS=("ICON-D2","GFS","ECMWF-IFS","GEFS-control","ICON-EU","ICON-D2-EPS")
@@ -21,12 +21,28 @@ class IntegrityAuditTests(unittest.TestCase):
                 der={"wind_speed_ms":5.0}
                 if model in POLICY["model_policy"]["required_gust_models"]:
                     der["gust_ms"]=7.0
-                rows.append({
+                rec={
                     "model":model,"run_time_utc":run.isoformat(),
                     "forecast_lead_hours":lead,
                     "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
                     "derived":der,
-                })
+                }
+                if model=="ICON-D2-EPS":
+                    ids=list(range(20))
+                    rec["members"]=[{"member":i} for i in ids]
+                    rec["ensemble_statistics"]={"member_count":20}
+                    rec["derived"]["ensemble_member_count"]=20
+                    meta={"last_run_initialisation_time_utc":run.isoformat(),
+                          "last_run_availability_time_utc":(run-timedelta(minutes=20)).isoformat()}
+                    rec["source_run_identity"]={
+                        "verification_status":"verified_stable_metadata_and_dwd_cycle",
+                        "run_time_utc":run.isoformat(),
+                        "metadata_before":meta,"metadata_after":meta,
+                        "settling_age_seconds_at_request":1200,
+                        "expected_member_ids":ids,
+                        "dwd_cycle_confirmation_url":"https://opendata.dwd.de/example"
+                    }
+                rows.append(rec)
             models[model]=rows
         return {
             "schema_version":1,"mode":"test","retrieved_at_utc":now.isoformat(),
@@ -88,6 +104,50 @@ class IntegrityAuditTests(unittest.TestCase):
         optional=[x for x in r["issues"] if x["code"]=="OPTIONAL_WEATHER_CONTEXT_FIELDS_UNAVAILABLE" and x["source"]=="ICON-EU"]
         self.assertEqual(len(optional),1,r["issues"])
         self.assertEqual(optional[0]["details"]["affected_fields"][0]["location"],"values.tot_prec")
+
+    def test_eps_member_set_incomplete_is_exact_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        rec=d["models"]["ICON-D2-EPS"][0]
+        rec["members"]=rec["members"][:-1]
+        rec["ensemble_statistics"]["member_count"]=19
+        rec["derived"]["ensemble_member_count"]=19
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="ENSEMBLE_MEMBER_SET_INCOMPLETE"]
+        self.assertEqual(len(xs),1,r["issues"])
+        self.assertEqual(xs[0]["details"]["affected_leads"][0]["lead_hours"],0)
+
+    def test_eps_unverified_run_identity_is_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        for rec in d["models"]["ICON-D2-EPS"]:
+            rec["source_run_identity"]["verification_status"]="unverified"
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="ENSEMBLE_RUN_IDENTITY_UNVERIFIED"]
+        self.assertEqual(len(xs),1,r["issues"])
+
+    def test_skm_stale_is_warning_not_primary_gate(self):
+        now=datetime.now(timezone.utc)
+        old=(now-timedelta(hours=5)).isoformat()
+        d={
+            "retrieved_at_utc":now.isoformat(),"provider":"MeteoMap.cloud",
+            "source_timestamp_timezone":"UTC","role":"optional_legacy_north_shore_diagnostic_never_primary",
+            "station":{"id":898},"requests":[
+                {"kind":"wind","success":True,"http_status":200},
+                {"kind":"gust","success":True,"http_status":200}],
+            "endpoint_summary":{
+                "wind":{"success":True,"last_time_utc":old,"observation_age_minutes":300},
+                "gust":{"success":True,"last_time_utc":old,"observation_age_minutes":300}}
+        }
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"s.json";p.write_text(json.dumps(d))
+            r=audit_skm(p,POLICY,now)
+        self.assertEqual(r["error_count"],0,r["issues"])
+        self.assertGreaterEqual(r["warning_count"],2)
+        self.assertTrue(r["bundle_ready_for_private_revalidation"])
+        self.assertTrue(r["non_blocking"])
 
     def svg_bundle(self,gap=False):
         now=datetime.now(timezone.utc)
