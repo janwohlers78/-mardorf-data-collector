@@ -103,7 +103,7 @@ def fetch_gefs(leads):
     for n in ns:
      if n in vals and vals[n]: return vals[n][0]['value']
    u=one('10u','u'); v=one('10v','v'); g=one('gust','10fg')
-   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals}
+   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point}
    if u is not None and v is not None: rec['derived']=derived(u,v,g)
    out.append(rec)
  return out
