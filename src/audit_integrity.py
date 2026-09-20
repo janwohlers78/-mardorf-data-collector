@@ -137,7 +137,7 @@ def audit_models(path,cfg,now):
                     if isinstance(val,dict) and (val.get("error_type") or val.get("error_message")):
                         record_problem({"lead_hours":lead,"location":"values."+key,"exception_type":val.get("error_type"),"message":val.get("error_message"),"source_url":val.get("source_url")},key)
 
-        identity_failures=[];member_failures=[]
+        identity_failures=[];member_failures=[];identity_summary=None;member_count_by_lead={}
         if model=="ICON-D2-EPS" and recs:
             ecfg=(cfg["model_policy"].get("ensemble_identity") or {}).get("ICON-D2-EPS") or {}
             expected_members=int(ecfg.get("expected_member_count",20))
@@ -148,6 +148,17 @@ def audit_models(path,cfg,now):
                 identity_failures.append({"reason":"source_run_identity_missing","record_count":len(recs)})
             else:
                 first=identities[0]
+                identity_summary={
+                    "verification_status":first.get("verification_status"),
+                    "run_time_utc":first.get("run_time_utc"),
+                    "metadata_before":first.get("metadata_before"),
+                    "metadata_after":first.get("metadata_after"),
+                    "settling_age_seconds_at_request":first.get("settling_age_seconds_at_request"),
+                    "minimum_settling_seconds":first.get("minimum_settling_seconds"),
+                    "dwd_cycle_confirmation_url":first.get("dwd_cycle_confirmation_url"),
+                    "expected_member_ids":first.get("expected_member_ids"),
+                    "source_timestamp_semantics":first.get("source_timestamp_semantics"),
+                }
                 id_runs=sorted({str(x.get("run_time_utc")) for x in identities if x.get("run_time_utc")})
                 statuses=sorted({str(x.get("verification_status")) for x in identities if x.get("verification_status")})
                 if statuses!=[required_status]:
@@ -175,6 +186,7 @@ def audit_models(path,cfg,now):
                 if lead not in expected_set:continue
                 members=r.get("members") if isinstance(r.get("members"),list) else []
                 member_ids=sorted(m.get("member") for m in members if isinstance(m,dict) and isinstance(m.get("member"),int))
+                member_count_by_lead[str(lead)]=len(member_ids)
                 der=r.get("derived") if isinstance(r.get("derived"),dict) else {}
                 stat=r.get("ensemble_statistics") if isinstance(r.get("ensemble_statistics"),dict) else {}
                 if member_ids!=list(range(expected_members)) or der.get("ensemble_member_count")!=expected_members or stat.get("member_count")!=expected_members:
@@ -269,6 +281,8 @@ def audit_models(path,cfg,now):
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
             "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
             "provider_attempts":provider_attempts,
+            "ensemble_run_identity":identity_summary,
+            "ensemble_member_count_by_lead":member_count_by_lead,
             "ensemble_run_identity_failures":identity_failures,
             "ensemble_member_failures":member_failures,
             "optional_weather_context_warnings":optional_source_warnings,
@@ -515,6 +529,18 @@ def markdown(report):
                 name,x["selected_run_time_utc"] or "—",x["run_age_hours"],x["maximum_run_age_hours"],
                 len(x["received_leads_hours"]),len(x["expected_collection_leads_hours"]),
                 x["provider_expected_max_horizon_hours"],x["provider_cycle_complete"],x["currentness_policy_pass"]))
+        eps=report["sources"].get("ICON-D2-EPS") or {}
+        ident=eps.get("ensemble_run_identity") or {}
+        if ident:
+            counts=eps.get("ensemble_member_count_by_lead") or {}
+            lines += ["","## ICON-D2-EPS identity evidence","",
+                "- Verification status: "+str(ident.get("verification_status")),
+                "- Open-Meteo model initialisation UTC: "+str(ident.get("run_time_utc")),
+                "- Open-Meteo availability UTC: "+str((ident.get("metadata_before") or {}).get("last_run_availability_time_utc")),
+                "- Settling age / minimum: %s / %s s."%(ident.get("settling_age_seconds_at_request"),ident.get("minimum_settling_seconds")),
+                "- DWD exact-cycle confirmation: "+str(ident.get("dwd_cycle_confirmation_url")),
+                "- Member count by required lead: "+json.dumps(counts,sort_keys=True),
+                "- Member identity/completeness failures: %s / %s."%(len(eps.get("ensemble_run_identity_failures") or []),len(eps.get("ensemble_member_failures") or []))]
     elif report["kind"]=="svg":
         x=report["sources"].get("SVG-42374",{})
         lines += [
