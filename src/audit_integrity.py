@@ -70,6 +70,7 @@ def audit_models(path,cfg,now):
                 checked_at_utc=now.isoformat(),future_offset_minutes=round(future_min,2),allowed_future_minutes=tol))
 
     qerrors=list((d.get("quality") or {}).get("errors") or [])
+    all_attempts=[x for x in (d.get("provider_attempts") or []) if isinstance(x,dict)]
     for model in cfg["model_policy"]["project_desired_leads"]:
         recs=[r for r in (d.get("models") or {}).get(model,[]) if isinstance(r,dict)]
         lead_rows={};duplicates=[];invalid_lead_rows=[]
@@ -179,6 +180,17 @@ def audit_models(path,cfg,now):
             issues.append(issue("OPTIONAL_WEATHER_CONTEXT_FIELDS_UNAVAILABLE","WARN",model,"optional_weather_context",
                 "Optional precipitation/CAPE context is incomplete at specific leads; wind-core completeness is unaffected.",
                 affected_fields=optional_source_warnings))
+        provider_attempts=[x for x in all_attempts if x.get("model")==model]
+        failed_attempts=[x for x in provider_attempts if x.get("status") in ("failed","failed_external")]
+        successful_attempts=[x for x in provider_attempts if x.get("status")=="success"]
+        if failed_attempts and successful_attempts:
+            issues.append(issue("PROVIDER_RETRY_RECOVERED","WARN",model,"provider_attempts",
+                "One or more provider attempts failed, but a later attempt for this run succeeded.",
+                attempts=provider_attempts))
+        elif failed_attempts and not successful_attempts:
+            issues.append(issue("PROVIDER_ATTEMPTS_FAILED","ERROR",model,"provider_attempts",
+                "All recorded provider attempts for at least one requested stage failed; exact mirror/exception/exit information is attached.",
+                attempts=provider_attempts))
         run_age=None;age_limit=float(cfg["model_policy"]["maximum_run_age_hours"][model])
         if run:
             run_age=(now-run).total_seconds()/3600
@@ -203,6 +215,7 @@ def audit_models(path,cfg,now):
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
             "duplicate_leads_hours":sorted(set(duplicates)),"required_field_failures":field_failures,
             "timestamp_failures":timestamp_failures,"provider_or_decode_errors":critical_source_errors,
+            "provider_attempts":provider_attempts,
             "optional_weather_context_warnings":optional_source_warnings,
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
