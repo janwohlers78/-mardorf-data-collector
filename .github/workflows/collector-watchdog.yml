@@ -1,0 +1,39 @@
+name: External collector watchdog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/collector-watchdog.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: public-collector-external-watchdog
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch routine freshness-gated collectors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for workflow in collect-svg.yml collect-models.yml collect-secondary.yml; do
+            echo "Dispatching $workflow with watchdog=true"
+            gh workflow run "$workflow" --repo "$GH_REPO" --ref main -f watchdog=true
+          done
+          {
+            echo "## External collector watchdog"
+            echo
+            echo "Dispatched all three existing collector workflows with watchdog=true."
+            echo "Each collector independently decides from verified private state whether a provider fetch is due."
+          } >> "$GITHUB_STEP_SUMMARY"
