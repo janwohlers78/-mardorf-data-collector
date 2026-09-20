@@ -27,6 +27,7 @@ class IntegrityAuditTests(unittest.TestCase):
                     "model":model,"run_time_utc":run.isoformat(),
                     "forecast_lead_hours":lead,
                     "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
+                    "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.34,"selection":"test"},
                     "derived":der,
                 }
                 if model=="ICON-D2-EPS":
@@ -119,6 +120,7 @@ class IntegrityAuditTests(unittest.TestCase):
                 "model":"ICON-EU","run_time_utc":run.isoformat(),
                 "forecast_lead_hours":lead,
                 "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
+                "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.34,"selection":"test"} if lead<=51 else None,
                 "values":{}
             }
             if lead<=51:
@@ -192,6 +194,26 @@ class IntegrityAuditTests(unittest.TestCase):
         self.assertEqual(len(xs),1,r["issues"])
         reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
         self.assertIn("source_run_identity_missing_on_some_records",reasons)
+
+    def test_model_grid_point_change_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        d["models"]["GFS"][1]["forecast_coordinate_or_grid_point"]={"latitude":52.5,"longitude":9.25}
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="MODEL_FORECAST_GRID_IDENTITY_INVALID" and x["source"]=="GFS"]
+        self.assertEqual(len(xs),1,r["issues"])
+        reasons=[x["reason"] for x in xs[0]["details"]["failures"]]
+        self.assertIn("forecast_grid_point_changes_within_model_run",reasons)
+        self.assertFalse(r["sources"]["GFS"]["provider_cycle_complete"])
+
+    def test_model_grid_point_missing_is_hard_error(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        del d["models"]["ECMWF-IFS"][0]["forecast_coordinate_or_grid_point"]
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="MODEL_FORECAST_GRID_IDENTITY_INVALID" and x["source"]=="ECMWF-IFS" for x in r["issues"]))
 
     def test_model_spot_mismatch_is_hard_error(self):
         now=datetime.now(timezone.utc);d=self.model_bundle()
