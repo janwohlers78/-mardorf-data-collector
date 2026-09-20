@@ -20,31 +20,25 @@ def get(url, timeout=60):
 
 
 def latest_dwd_icon_d2_cycle(required_lead=0):
-    """Return newest ICON-D2 cycle that actually publishes the required horizon.
-
-    DWD intermediate cycles can have shorter forecast horizons than the main cycles.
-    Selecting only the chronologically newest cycle can therefore create 404s for
-    longer leads. Inspect the directory listing and require the requested lead.
-    """
-    eligible=[]
-    diagnostics=[]
+    """Return newest ICON-D2 cycle with all wind-critical fields at required lead."""
+    critical=('u_10m','v_10m','vmax_10m');coverage={};diagnostics=[]
     for hh in ['00','03','06','09','12','15','18','21']:
-        url=f'https://opendata.dwd.de/weather/nwp/icon-d2/grib/{hh}/u_10m/'
-        try:
-            txt=get(url).text
-            pairs=re.findall(r'icon-d2_germany_regular-lat-lon_single-level_(\d{10})_(\d{3})_2d_u_10m\.grib2\.bz2', txt)
-            per_cycle={}
-            for cycle,lead in pairs:
-                per_cycle.setdefault(cycle,set()).add(int(lead))
-            for cycle,leads in per_cycle.items():
-                maxlead=max(leads) if leads else -1
-                diagnostics.append((cycle,maxlead))
-                if required_lead in leads:
-                    eligible.append(cycle)
-        except Exception as e:
-            diagnostics.append((hh,f'ERR:{type(e).__name__}'))
+        for param in critical:
+            url=f'https://opendata.dwd.de/weather/nwp/icon-d2/grib/{hh}/{param}/'
+            try:
+                txt=get(url).text
+                pattern=rf'icon-d2_germany_regular-lat-lon_single-level_(\d{{10}})_(\d{{3}})_2d_{re.escape(param)}\.grib2\.bz2'
+                for cycle,lead in re.findall(pattern,txt):
+                    coverage.setdefault(cycle,{}).setdefault(param,set()).add(int(lead))
+            except Exception as e:
+                diagnostics.append((hh,param,f'ERR:{type(e).__name__}'))
+    eligible=[
+        cycle for cycle,fields in coverage.items()
+        if all(required_lead in fields.get(param,set()) for param in critical)
+    ]
     if not eligible:
-        raise RuntimeError(f'No ICON-D2 cycle with lead {required_lead} discovered; diagnostics={diagnostics[-20:]}')
+        summary={cycle:{p:max(v) if v else -1 for p,v in fields.items()} for cycle,fields in sorted(coverage.items())[-20:]}
+        raise RuntimeError(f'No ICON-D2 cycle with all critical fields at lead {required_lead}; coverage={summary}; diagnostics={diagnostics[-20:]}')
     return max(eligible)
 
 
@@ -104,8 +98,9 @@ def fetch_icon(leads):
 def gfs_url(cycle,lead,probe=False):
     ymd,hh=cycle[:8],cycle[8:]
     q={'file':f'gfs.t{hh}z.pgrb2.0p25.f{lead:03d}','lev_10_m_above_ground':'on','var_UGRD':'on','var_VGRD':'on','subregion':'','leftlon':f'{LON-0.3:.3f}','rightlon':f'{LON+0.3:.3f}','toplat':f'{LAT+0.3:.3f}','bottomlat':f'{LAT-0.3:.3f}','dir':f'/gfs.{ymd}/{hh}/atmos'}
+    q.update({'lev_surface':'on','var_GUST':'on'})
     if not probe:
-        q.update({'lev_surface':'on','var_GUST':'on','var_APCP':'on'})
+        q.update({'var_APCP':'on'})
     return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'+urlencode(q)
 
 
