@@ -16,6 +16,11 @@ on:
   schedule:
     - cron: '13,33,53 * * * *'
   workflow_dispatch:
+    inputs:
+      watchdog:
+        description: 'Routine external watchdog trigger; respects freshness gate'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,16 +39,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check whether scheduled SVG collection is due
+      - name: Check whether routine SVG collection is due
         id: due
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.watchdog == true)
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
-        run: python3 src/check_collection_due.py --kind svg --max-age-minutes 50
+        run: python3 src/check_collection_due.py --kind svg --max-age-minutes 40
 
-      - name: Report skipped schedule check
-        if: github.event_name == 'schedule' && steps.due.outputs.due != 'true'
+      - name: Report skipped routine trigger
+        if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.watchdog == true)) && steps.due.outputs.due != 'true'
         run: |
           {
             echo "## SVG collector schedule check"
@@ -56,16 +61,16 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true'
         with:
           python-version: '3.12'
 
       - name: Install dependency
-        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true'
         run: 'python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-runtime.txt'
 
       - name: Fetch SVG endpoints and record exact request diagnostics
-        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true'
         continue-on-error: true
         env:
           WEATHERLINK_API_KEY: ${{ secrets.WEATHERLINK_API_KEY }}
@@ -73,7 +78,7 @@ jobs:
         run: python src/fetch_svg_weatherlink.py
 
       - name: Audit endpoint results, observation age and five-minute archive continuity
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |
           python src/audit_integrity.py \
             --kind svg \
@@ -82,12 +87,12 @@ jobs:
             --md-out work/svg_integrity.md
 
       - name: Fetch optional SKM MeteoMap station 898
-        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true'
         continue-on-error: true
         run: python src/fetch_skm_optional.py
 
       - name: Audit optional SKM without gating SVG
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         continue-on-error: true
         run: |
           python src/audit_integrity.py \
@@ -97,7 +102,7 @@ jobs:
             --md-out work/skm_integrity.md
 
       - name: Publish detailed integrity reports in Actions summary
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |
           cat work/svg_integrity.md >> "$GITHUB_STEP_SUMMARY"
           {
@@ -108,7 +113,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Transfer payload and integrity history to private repository
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
         shell: bash
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -125,7 +130,7 @@ jobs:
           python src/push_private.py "${args[@]}"
 
       - name: Transfer optional SKM payload and health to private repository
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
         continue-on-error: true
         shell: bash
         env:
@@ -143,7 +148,7 @@ jobs:
           python src/push_private.py "${args[@]}"
 
       - name: Report optional SKM status without gating primary evaluation
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         continue-on-error: true
         run: |
           python - <<'PY'
@@ -158,7 +163,7 @@ jobs:
           PY
 
       - name: Fail workflow when granular integrity audit found errors
-        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |
           python - <<'PY'
           import json
