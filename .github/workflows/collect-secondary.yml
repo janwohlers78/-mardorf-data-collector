@@ -2,7 +2,7 @@ name: Collect Wunstorf and ETNW observations
 
 on:
   push:
-    branches: [main]
+    branches: [main, public-secondary-observations-20260920]
     paths:
       - 'src/fetch_wunstorf.py'
       - 'src/fetch_etnw_metar.py'
@@ -65,7 +65,7 @@ jobs:
             --md-out work/etnw_integrity.md
 
       - name: Transfer Wunstorf payload and integrity
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
@@ -75,7 +75,7 @@ jobs:
           python src/push_private.py "${args[@]}"
 
       - name: Transfer ETNW payload and integrity
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
