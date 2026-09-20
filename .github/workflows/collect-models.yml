@@ -20,13 +20,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-model-collector
+  group: public-model-collector-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 65
     env:
       COLLECTOR_MODEL_FILE: work/model_snapshot.json
     steps:
@@ -41,41 +41,174 @@ jobs:
           python-version: '3.12'
       - name: Install Python dependencies
         run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
-      - name: Fetch ICON-D2 and GFS
+
+      - name: Fetch ICON-D2 base horizon
         continue-on-error: true
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
-            python src/fetch_model_data.py --test
-          else
-            python src/fetch_model_data.py
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          set +e
+          timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-D2 --stage base "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model ICON-D2 --stage base --exit-code "$rc" --reason "hard_timeout_5m"
           fi
-      - name: Fetch ECMWF-IFS and GEFS-control
+          exit "$rc"
+
+      - name: Fetch GFS base horizon
         continue-on-error: true
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
-            python src/fetch_extra_models.py --test
-          else
-            python src/fetch_extra_models.py
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          set +e
+          timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model GFS --stage base "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model GFS --stage base --exit-code "$rc" --reason "hard_timeout_5m"
           fi
-      - name: Fetch ICON-EU and ICON-D2-EPS
+          exit "$rc"
+
+      - name: Fetch GEFS-control base horizon
         continue-on-error: true
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then
-            python src/fetch_dwd_additional_models.py --test
-          else
-            python src/fetch_dwd_additional_models.py
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          set +e
+          timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model GEFS-control --stage base "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model GEFS-control --stage base --exit-code "$rc" --reason "hard_timeout_5m"
           fi
-      - name: Extend eligible medium-range paths
+          exit "$rc"
+
+      - name: Fetch ICON-EU base horizon
+        continue-on-error: true
+        shell: bash
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          set +e
+          timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-EU --stage base "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model ICON-EU --stage base --exit-code "$rc" --reason "hard_timeout_5m"
+          fi
+          exit "$rc"
+
+      - name: Fetch ICON-D2-EPS base horizon
+        continue-on-error: true
+        shell: bash
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          set +e
+          timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-D2-EPS --stage base "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model ICON-D2-EPS --stage base --exit-code "$rc" --reason "hard_timeout_5m"
+          fi
+          exit "$rc"
+
+      - name: Fetch ECMWF-IFS base horizon with mirror fallback
+        continue-on-error: true
+        shell: bash
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          last=1
+          for source in azure google ecmwf; do
+            echo "ECMWF base attempt via $source"
+            set +e
+            ECMWF_OPEN_DATA_SOURCE="$source" timeout --signal=TERM --kill-after=15s 6m               python src/provider_fetch.py --model ECMWF-IFS --stage base "${args[@]}"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then exit 0; fi
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              python src/record_provider_failure.py --model ECMWF-IFS --stage base --exit-code "$rc" --mirror "$source" --reason "hard_timeout_6m"
+            fi
+            last=$rc
+          done
+          exit "$last"
+
+      - name: Extend GFS to cycle horizon
         if: github.event_name != 'push' && inputs.test_mode != true
         continue-on-error: true
-        run: python src/extend_model_horizon.py
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 7m python src/provider_fetch.py --model GFS --stage extension
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model GFS --stage extension --exit-code "$rc" --reason "hard_timeout_7m"
+          fi
+          exit "$rc"
+
+      - name: Extend GEFS-control to cycle horizon
+        if: github.event_name != 'push' && inputs.test_mode != true
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 7m python src/provider_fetch.py --model GEFS-control --stage extension
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model GEFS-control --stage extension --exit-code "$rc" --reason "hard_timeout_7m"
+          fi
+          exit "$rc"
+
+      - name: Extend ICON-EU to cycle horizon
+        if: github.event_name != 'push' && inputs.test_mode != true
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 7m python src/provider_fetch.py --model ICON-EU --stage extension
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python src/record_provider_failure.py --model ICON-EU --stage extension --exit-code "$rc" --reason "hard_timeout_7m"
+          fi
+          exit "$rc"
+
+      - name: Extend ECMWF-IFS to cycle horizon with mirror fallback
+        if: github.event_name != 'push' && inputs.test_mode != true
+        continue-on-error: true
+        shell: bash
+        run: |
+          last=1
+          for source in azure google ecmwf; do
+            echo "ECMWF extension attempt via $source"
+            set +e
+            ECMWF_OPEN_DATA_SOURCE="$source" timeout --signal=TERM --kill-after=15s 6m               python src/provider_fetch.py --model ECMWF-IFS --stage extension
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then exit 0; fi
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              python src/record_provider_failure.py --model ECMWF-IFS --stage extension --exit-code "$rc" --mirror "$source" --reason "hard_timeout_6m"
+            fi
+            last=$rc
+          done
+          exit "$last"
+
       - name: Audit every model source, lead, timestamp and required field
         if: always()
         run: |
           python src/audit_integrity.py             --kind models             --input work/model_snapshot.json             --json-out work/model_integrity.json             --md-out work/model_integrity.md
+
       - name: Publish detailed integrity report in Actions summary
         if: always()
         run: cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Transfer payload and integrity history to private repository
         if: always() && github.event_name != 'push' && inputs.test_mode != true
         shell: bash
@@ -88,10 +221,9 @@ jobs:
             exit 0
           fi
           args=(--kind models --integrity-json work/model_integrity.json --integrity-md work/model_integrity.md)
-          if [ -f work/model_snapshot.json ]; then
-            args+=(--file work/model_snapshot.json)
-          fi
+          if [ -f work/model_snapshot.json ]; then args+=(--file work/model_snapshot.json); fi
           python src/push_private.py "${args[@]}"
+
       - name: Fail workflow when granular integrity audit found errors
         if: always()
         run: |
