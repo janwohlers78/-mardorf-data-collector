@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'src/fetch_svg_weatherlink.py'
+      - 'src/fetch_skm_optional.py'
       - 'src/audit_integrity.py'
       - 'src/push_private.py'
       - 'src/check_collection_due.py'
@@ -75,9 +76,31 @@ jobs:
             --json-out work/svg_integrity.json \
             --md-out work/svg_integrity.md
 
-      - name: Publish detailed integrity report in Actions summary
+      - name: Fetch optional SKM MeteoMap station 898
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
+        continue-on-error: true
+        run: python src/fetch_skm_optional.py
+
+      - name: Audit optional SKM without gating SVG
         if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
-        run: cat work/svg_integrity.md >> "$GITHUB_STEP_SUMMARY"
+        continue-on-error: true
+        run: |
+          python src/audit_integrity.py \
+            --kind skm \
+            --input work/skm_bundle.json \
+            --json-out work/skm_integrity.json \
+            --md-out work/skm_integrity.md
+
+      - name: Publish detailed integrity reports in Actions summary
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        run: |
+          cat work/svg_integrity.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo
+            echo "---"
+            echo
+            cat work/skm_integrity.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Transfer payload and integrity history to private repository
         if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
@@ -95,6 +118,39 @@ jobs:
             args+=(--file work/svg_bundle.json)
           fi
           python src/push_private.py "${args[@]}"
+
+      - name: Transfer optional SKM payload and health to private repository
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
+        continue-on-error: true
+        shell: bash
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        run: |
+          if [ -z "$PRIVATE_REPO_TOKEN" ]; then
+            echo 'PRIVATE_REPO_TOKEN is not configured; optional SKM transfer skipped.'
+            exit 0
+          fi
+          args=(--kind skm --integrity-json work/skm_integrity.json --integrity-md work/skm_integrity.md)
+          if [ -f work/skm_bundle.json ]; then
+            args+=(--file work/skm_bundle.json)
+          fi
+          python src/push_private.py "${args[@]}"
+
+      - name: Report optional SKM status without gating primary evaluation
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('work/skm_integrity.json')
+          if not p.exists():
+              print('optional_skm_status=NO_REPORT; primary SVG/model evaluation remains unaffected')
+          else:
+              d=json.load(open(p))
+              print('optional_skm_status=',d['status'],'errors=',d['error_count'],'warnings=',d['warning_count'],
+                    'non_blocking=',d.get('non_blocking'))
+          PY
 
       - name: Fail workflow when granular integrity audit found errors
         if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
