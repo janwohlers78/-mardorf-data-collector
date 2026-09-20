@@ -10,7 +10,7 @@ FAMILY={
     "ICON-D2":"DWD-ICON","ICON-D2-EPS":"DWD-ICON","ICON-EU":"DWD-ICON",
     "ECMWF-IFS":"ECMWF","GFS":"GFS","GEFS-control":"GFS",
 }
-POLICY_VERSION="collector-integrity-v1.2"
+POLICY_VERSION="collector-integrity-v1.3"
 
 def dt(v):
     if not v:return None
