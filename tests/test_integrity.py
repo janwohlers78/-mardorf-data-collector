@@ -185,6 +185,28 @@ class IntegrityAuditTests(unittest.TestCase):
         self.assertEqual(r["input_payload_sha256"],hashlib.sha256(raw).hexdigest())
         self.assertEqual(r["input_payload_bytes"],len(raw))
 
+    def test_invalid_json_still_records_exact_payload_hash(self):
+        now=datetime.now(timezone.utc);raw=b"{not-json"
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_bytes(raw)
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(x["code"]=="MODEL_BUNDLE_JSON_INVALID" for x in r["issues"]))
+        self.assertEqual(r["input_payload_sha256"],hashlib.sha256(raw).hexdigest())
+        self.assertEqual(r["input_payload_bytes"],len(raw))
+
+    def test_failed_extension_is_not_masked_by_successful_base_stage(self):
+        now=datetime.now(timezone.utc);d=self.model_bundle()
+        d["provider_attempts"]=[
+            {"model":"GFS","stage":"base","status":"success"},
+            {"model":"GFS","stage":"extension","status":"failed","exception_type":"RuntimeError","exception_message":"boom"},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        xs=[x for x in r["issues"] if x["code"]=="PROVIDER_STAGE_ATTEMPTS_FAILED" and x["source"]=="GFS"]
+        self.assertEqual(len(xs),1,r["issues"])
+        self.assertEqual(xs[0]["details"]["stage"],"extension")
+
     def test_due_check_future_success_fails_open(self):
         now=datetime(2026,9,20,8,0,tzinfo=timezone.utc)
         stamp=(now+timedelta(minutes=45)).isoformat()
