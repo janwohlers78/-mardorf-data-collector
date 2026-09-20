@@ -48,7 +48,7 @@ def cycle_from_existing(data,model):
 def cycle_horizon(model,base):
     if model in ('ICON-D2','ICON-D2-EPS'): return 48
     if model=='ICON-EU': return 120 if base.hour in (0,6,12,18) else 51
-    if model=='ECMWF-IFS': return 120
+    if model=='ECMWF-IFS': return 120 if base.hour in (0,12) else 90
     return 120
 
 def leads_for_cycle(model,base):
