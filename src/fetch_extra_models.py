@@ -9,6 +9,7 @@ from ecmwf.opendata import Client
 from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 LAT=52.4942; LON=9.3418
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
+ECMWF_PARAMS=['10u','10v','10fg','10fg3','tp','mucape']
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 def nearest(path):
@@ -45,7 +46,7 @@ def fetch_ifs(leads):
  with tempfile.TemporaryDirectory() as td:
   target=Path(td)/'ifs_batch.grib2'
   client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
-  result=client.retrieve(stream='oper',type='fc',step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(target))
+  result=client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target))
   run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}
   for n,s,v in nearest(target):
    lead=step_end(s)
