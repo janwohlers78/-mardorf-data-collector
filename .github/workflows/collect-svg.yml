@@ -1,4 +1,4 @@
-# validation_generation: skm-readback-audit-20260920
+# validation_generation: skm-readback-audit-svg-cutover-20260920
 name: Collect SVG WeatherLink data
 
 on:
