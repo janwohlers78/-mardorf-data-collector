@@ -54,6 +54,8 @@ def grib_nearest(path):
     m=re.search(r'Grid Point chosen .*?latitude=([+-]?\d+(?:\.\d+)?) longitude=([+-]?\d+(?:\.\d+)?)',p.stdout)
     if m:
         chosen_lat=float(m.group(1)); chosen_lon=float(m.group(2))
+    if chosen_lat is None or chosen_lon is None:
+        raise RuntimeError(f'Cannot identify ecCodes selected grid point for {path}: {p.stdout[:700]}')
     rows=[]
     for line in p.stdout.splitlines():
         s=line.strip()
@@ -89,6 +91,10 @@ def fetch_icon(leads):
                     grib.write_bytes(bz2.decompress(get(url,90).content))
                     assert_grib_valid_time(grib,base,base+timedelta(hours=lead),f'ICON-D2 {param} lead {lead}')
                     rows=grib_nearest(grib)
+                    if 'forecast_coordinate_or_grid_point' not in rec:
+                        rec['forecast_coordinate_or_grid_point']={
+                            'latitude':rows[0]['lat'],'longitude':rows[0]['lon'],
+                            'selection':'ecCodes_nearest_grid_point'}
                     rec['values'][param]=rows[0]
                     if len(rows)>1:
                         rec['values'][param+'_all_messages']=rows
@@ -139,7 +145,11 @@ def fetch_gfs(leads):
                 if raw[:4] != b'GRIB': raise RuntimeError(f'NOMADS response is not GRIB, bytes={len(raw)}, head={raw[:100]!r}')
                 p.write_bytes(raw)
                 assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GFS lead {lead}')
-                for row in grib_nearest(p):
+                rows=grib_nearest(p)
+                rec['forecast_coordinate_or_grid_point']={
+                    'latitude':rows[0]['lat'],'longitude':rows[0]['lon'],
+                    'selection':'ecCodes_nearest_grid_point'}
+                for row in rows:
                     rec['values'].setdefault(row['shortName'],[]).append(row)
             except Exception as e:
                 rec['error_type']=type(e).__name__; rec['error_message']=str(e)
