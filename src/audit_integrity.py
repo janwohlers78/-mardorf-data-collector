@@ -50,14 +50,17 @@ def audit_models(path,cfg,now):
         issues.append(issue("MODEL_BUNDLE_FILE_NOT_CREATED","ERROR","collector","bundle",
             "No model payload exists to transfer or ingest.",path=str(path)))
         return make_report("models",now,sources,issues,False,{"input_file_present":False})
-    try:
-        raw=path.read_bytes()
-        d=json.loads(raw.decode("utf-8"))
+    try:raw=path.read_bytes()
+    except Exception as e:
+        issues.append(issue("MODEL_BUNDLE_FILE_READ_FAILED","ERROR","collector","bundle",
+            "The model payload exists but cannot be read.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
+        return make_report("models",now,sources,issues,False,{"input_file_present":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+    try:d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("MODEL_BUNDLE_JSON_INVALID","ERROR","collector","bundle",
             "The model payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
-        return make_report("models",now,sources,issues,False,{"input_file_present":True})
-    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+        return make_report("models",now,sources,issues,False,{"input_file_present":True,**input_meta})
 
     spot=d.get("spot") if isinstance(d.get("spot"),dict) else {}
     expected_spot=cfg["model_policy"]["spot"]
@@ -368,14 +371,17 @@ def audit_svg(path,cfg,now):
         issues.append(issue("SVG_BUNDLE_FILE_NOT_CREATED","ERROR","SVG-42374","bundle",
             "No SVG payload exists to transfer or ingest.",path=str(path)))
         return make_report("svg",now,sources,issues,False,{"input_file_present":False})
-    try:
-        raw=path.read_bytes()
-        d=json.loads(raw.decode("utf-8"))
+    try:raw=path.read_bytes()
+    except Exception as e:
+        issues.append(issue("SVG_BUNDLE_FILE_READ_FAILED","ERROR","SVG-42374","bundle",
+            "The SVG payload exists but cannot be read.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
+        return make_report("svg",now,sources,issues,False,{"input_file_present":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+    try:d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("SVG_BUNDLE_JSON_INVALID","ERROR","SVG-42374","bundle",
             "The SVG payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
-        return make_report("svg",now,sources,issues,False,{"input_file_present":True})
-    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+        return make_report("svg",now,sources,issues,False,{"input_file_present":True,**input_meta})
     station=d.get("station") if isinstance(d.get("station"),dict) else {}
     if station.get("id")!=cfg["svg_policy"]["station_id"]:
         issues.append(issue("SVG_STATION_ID_MISMATCH","ERROR","SVG-42374","station_identity",
@@ -520,14 +526,17 @@ def audit_skm(path,cfg,now):
         issues.append(issue("SKM_BUNDLE_FILE_NOT_CREATED","ERROR",station,"bundle",
             "The optional MeteoMap probe produced no payload.",path=str(path)))
         return make_report("skm",now,sources,issues,False,{"input_file_present":False,"non_blocking":True})
-    try:
-        raw=path.read_bytes()
-        d=json.loads(raw.decode("utf-8"))
+    try:raw=path.read_bytes()
+    except Exception as e:
+        issues.append(issue("SKM_BUNDLE_FILE_READ_FAILED","ERROR",station,"bundle",
+            "The optional SKM payload exists but cannot be read.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
+        return make_report("skm",now,sources,issues,False,{"input_file_present":True,"non_blocking":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+    try:d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("SKM_BUNDLE_JSON_INVALID","ERROR",station,"bundle",
             "The optional SKM payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
-        return make_report("skm",now,sources,issues,False,{"input_file_present":True,"non_blocking":True})
-    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+        return make_report("skm",now,sources,issues,False,{"input_file_present":True,"non_blocking":True,**input_meta})
     skm_station=d.get("station") if isinstance(d.get("station"),dict) else {}
     if skm_station.get("id")!=pcfg.get("station_id"):
         issues.append(issue("SKM_STATION_ID_MISMATCH","ERROR",station,"station_identity",
