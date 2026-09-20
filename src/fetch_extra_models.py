@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import requests
 from ecmwf.opendata import Client
-from grib_identity import assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
+from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 LAT=52.4942; LON=9.3418
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
@@ -36,9 +36,9 @@ def grib_run_time(path):
     return observed[0]
 
 def step_end(step_range):
- import re
- nums=re.findall(r'\d+',str(step_range))
- return int(nums[-1]) if nums else None
+ value=_step_end_hours(step_range)
+ if value is None or abs(value-round(value))>1e-9:return None
+ return int(round(value))
 
 def fetch_ifs(leads):
  out=[]
