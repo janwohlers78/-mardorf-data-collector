@@ -16,15 +16,14 @@ def grib_message_identities(path):
         capture_output=True,text=True,check=True)
     rows=[]
     for line in p.stdout.splitlines():
-        parts=line.strip().split()
+        stripped=line.strip()
+        if not stripped:continue
+        parts=stripped.split()
         if len(parts)<6:
-            continue
+            raise RuntimeError(f"incomplete GRIB identity row in {path}: {stripped!r}")
         short_name,data_date,data_time,step_range,validity_date,validity_time=parts[:6]
-        try:
-            run=_grib_datetime(data_date,data_time,"reference time",path)
-            valid=_grib_datetime(validity_date,validity_time,"validity time",path)
-        except Exception:
-            continue
+        run=_grib_datetime(data_date,data_time,"reference time",path)
+        valid=_grib_datetime(validity_date,validity_time,"validity time",path)
         nums=re.findall(r"\d+",str(step_range))
         step_end=int(nums[-1]) if nums else None
         rows.append({
