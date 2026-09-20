@@ -11,10 +11,13 @@ permissions:
 
 jobs:
   svg:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -52,12 +55,15 @@ jobs:
           PY
 
   models:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
       COLLECTOR_MODEL_FILE: work/model_snapshot.json
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install ecCodes
         run: |
           sudo apt-get update
