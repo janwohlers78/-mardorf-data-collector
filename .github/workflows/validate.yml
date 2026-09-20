@@ -2,7 +2,7 @@ name: Validate collector code
 
 on:
   push:
-    branches: [main]
+    branches: [main, cutover-v15-hourly-source-20260920]
     paths:
       - 'src/**'
       - '.github/workflows/**'
