@@ -136,8 +136,20 @@ def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
         receipts.append(receipt)
     return receipts
 
+REF_UPDATE_MAX_ATTEMPTS=8
+REF_UPDATE_BACKOFF_SECONDS=(1,2,4,8,12,16,20,30)
+
+def ref_retry_delay(attempt):
+    if attempt < 0:
+        raise ValueError("attempt must be nonnegative")
+    return REF_UPDATE_BACKOFF_SECONDS[min(attempt,len(REF_UPDATE_BACKOFF_SECONDS)-1)]
+
 def atomic_commit(repo,files,message,h):
-    """Commit with exact-byte readback and race-safe monotonic mutable pointers."""
+    """Commit with exact-byte readback and race-safe monotonic mutable pointers.
+
+    Every failed compare-and-swap style main-ref update re-reads current main,
+    re-checks monotonic guards and rebuilds the tree from that new parent.
+    """
     all_items=list(files)
     blob_shas={}
     for item in all_items:
@@ -147,7 +159,7 @@ def atomic_commit(repo,files,message,h):
         blob_shas[item["path"]]=existing_sha or blob(repo,item["content"],h)
 
     last=None
-    for attempt in range(4):
+    for attempt in range(REF_UPDATE_MAX_ATTEMPTS):
         try:
             # Re-evaluate pointer ordering on every retry, after any competing
             # writer may have advanced main.
@@ -191,7 +203,8 @@ def atomic_commit(repo,files,message,h):
             last=f"PATCH ref -> HTTP {r.status_code}: {r.text[:800]}"
         except Exception as e:
             last=f"{type(e).__name__}: {e}"
-        time.sleep(2**attempt)
+        if attempt < REF_UPDATE_MAX_ATTEMPTS-1:
+            time.sleep(ref_retry_delay(attempt))
     raise RuntimeError(f"atomic private transfer failed after retries: {last}")
 
 def pointer_item(path,content,guard_path,field,incoming_time):
@@ -253,6 +266,7 @@ def main():
         "latest_pointer_rule":"generated_at_utc is monotonic across concurrent/retried writers",
         "success_pointer_rule":"latest_success is published only with a verified transfer receipt",
         "main_ref_check":"main must resolve to the verified commit immediately after update",
+        "main_ref_race_policy":"up to 8 CAS-style retries; each retry re-reads main and rebuilds the tree",
     }
 
     md_text=Path(args.integrity_md).read_text(encoding="utf-8")
