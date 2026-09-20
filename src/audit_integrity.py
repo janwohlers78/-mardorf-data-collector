@@ -299,16 +299,19 @@ def audit_models(path,cfg,now):
                 "ICON-D2-EPS must contain exactly the fixed 20 member identities at every required lead.",
                 affected_leads=member_failures))
         provider_attempts=[x for x in all_attempts if x.get("model")==model]
-        failed_attempts=[x for x in provider_attempts if x.get("status") in ("failed","failed_external")]
-        successful_attempts=[x for x in provider_attempts if x.get("status")=="success"]
-        if failed_attempts and successful_attempts:
-            issues.append(issue("PROVIDER_RETRY_RECOVERED","WARN",model,"provider_attempts",
-                "One or more provider attempts failed, but a later attempt for this run succeeded.",
-                attempts=provider_attempts))
-        elif failed_attempts and not successful_attempts:
-            issues.append(issue("PROVIDER_ATTEMPTS_FAILED","ERROR",model,"provider_attempts",
-                "All recorded provider attempts for at least one requested stage failed; exact mirror/exception/exit information is attached.",
-                attempts=provider_attempts))
+        attempt_stages=sorted({str(x.get("stage") or "unknown") for x in provider_attempts})
+        for stage in attempt_stages:
+            stage_attempts=[x for x in provider_attempts if str(x.get("stage") or "unknown")==stage]
+            failed_attempts=[x for x in stage_attempts if x.get("status") in ("failed","failed_external")]
+            successful_attempts=[x for x in stage_attempts if x.get("status")=="success"]
+            if failed_attempts and successful_attempts:
+                issues.append(issue("PROVIDER_RETRY_RECOVERED","WARN",model,"provider_attempts",
+                    "One or more provider attempts failed, but a later attempt for the same acquisition stage succeeded.",
+                    stage=stage,attempts=stage_attempts))
+            elif failed_attempts and not successful_attempts:
+                issues.append(issue("PROVIDER_STAGE_ATTEMPTS_FAILED","ERROR",model,"provider_attempts",
+                    "All recorded attempts for a requested acquisition stage failed; success in another stage does not mask this failure.",
+                    stage=stage,attempts=stage_attempts))
         run_age=None;age_limit=float(cfg["model_policy"]["maximum_run_age_hours"][model])
         if run:
             run_age=(now-run).total_seconds()/3600
