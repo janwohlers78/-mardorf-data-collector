@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from datetime import datetime, timezone
 
 from finalize_secondary_batch import build_batch, compact_stamp
@@ -76,6 +77,18 @@ class SecondaryBatchTests(unittest.TestCase):
         self.receipts["wunstorf"]["payload_source_sha256"]="x"*64
         with self.assertRaisesRegex(RuntimeError,"payload SHA"):
             build_batch(self.reports,self.receipts)
+
+    def test_workflow_finalizes_batch_only_after_both_gates(self):
+        text=Path(".github/workflows/collect-secondary.yml").read_text(encoding="utf-8")
+        self.assertIn("src/finalize_secondary_batch.py",text)
+        order=[
+            text.index("Transfer Wunstorf payload and integrity"),
+            text.index("Transfer ETNW payload and integrity"),
+            text.index("Gate Wunstorf integrity"),
+            text.index("Gate ETNW integrity"),
+            text.index("Finalize atomic secondary batch receipt"),
+        ]
+        self.assertEqual(order,sorted(order))
 
 
 if __name__=="__main__":
