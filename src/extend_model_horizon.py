@@ -22,8 +22,14 @@ ECMWF_PARAMS=['10u','10v','10fg','10fg3','tp','mucape']
 S=requests.Session();S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 
+class NearestRows(list):
+    pass
+
 def nearest(path):
-    p=subprocess.run(['grib_ls','-l',f'{LAT},{LON},1','-p','shortName,stepRange',str(path)],capture_output=True,text=True,check=True);rows=[]
+    p=subprocess.run(['grib_ls','-l',f'{LAT},{LON},1','-p','shortName,stepRange',str(path)],capture_output=True,text=True,check=True)
+    m=re.search(r'Grid Point chosen .*?latitude=([+-]?\d+(?:\.\d+)?) longitude=([+-]?\d+(?:\.\d+)?)',p.stdout)
+    if not m:raise RuntimeError(f'Cannot identify ecCodes selected grid point for {path}: {p.stdout[:700]}')
+    rows=NearestRows();rows.point={'latitude':float(m.group(1)),'longitude':float(m.group(2)),'selection':'ecCodes_nearest_grid_point'}
     for line in p.stdout.splitlines():
         x=line.strip().split()
         if len(x)>=3:
@@ -80,12 +86,13 @@ def fetch_noaa(data,model,gefs=False):
             url=gfs_url(base,lead,gefs);r=S.get(url,timeout=90);r.raise_for_status()
             if r.content[:4]!=b'GRIB':raise RuntimeError(f'{model} lead {lead}: non-GRIB response')
             p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'{model} extension lead {lead}');vals={}
-            for n,s,v in nearest(p):vals.setdefault(n,[]).append({'stepRange':s,'value':v})
+            rows=nearest(p)
+            for n,s,v in rows:vals.setdefault(n,[]).append({'stepRange':s,'value':v})
             def one(*ns):
                 for n in ns:
                     if vals.get(n):return vals[n][0]['value']
                 return None
-            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals}
+            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
     return out
@@ -145,11 +152,11 @@ def fetch_icon_eu(data):
                 if not cand:vals[param]={'error':'file_not_published'};continue
                 url=sorted(cand)[0];urls.append(url)
                 try:
-                    r=S.get(url,timeout=90);r.raise_for_status();p=Path(td)/f'eu_{param}_{lead}.grib2';p.write_bytes(bz2.decompress(r.content));assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU extension {param} lead {lead}');vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
+                    r=S.get(url,timeout=90);r.raise_for_status();p=Path(td)/f'eu_{param}_{lead}.grib2';p.write_bytes(bz2.decompress(r.content));assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU extension {param} lead {lead}');rows=nearest(p);point=point or rows.point;vals[param]=[{'stepRange':s,'value':v} for _,s,v in rows]
                 except Exception as e:vals[param]={'error':f'{type(e).__name__}: {e}'}
             def one(name):
                 x=vals.get(name);return x[0]['value'] if isinstance(x,list) and x else None
-            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals}
+            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'forecast_coordinate_or_grid_point':point}
             if one('u_10m') is not None and one('v_10m') is not None:rec['derived']=derived(one('u_10m'),one('v_10m'),one('vmax_10m'))
             out.append(rec)
     return out
