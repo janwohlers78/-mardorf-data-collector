@@ -7,10 +7,11 @@ on:
       - 'src/fetch_svg_weatherlink.py'
       - 'src/audit_integrity.py'
       - 'src/push_private.py'
+      - 'src/check_collection_due.py'
       - 'config/integrity_policy.json'
       - '.github/workflows/collect-svg.yml'
   schedule:
-    - cron: '17 * * * *'
+    - cron: '13,33,53 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -23,29 +24,63 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check whether scheduled SVG collection is due
+        id: due
+        if: github.event_name == 'schedule'
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        run: python3 src/check_collection_due.py --kind svg --max-age-minutes 50
+
+      - name: Report skipped schedule check
+        if: github.event_name == 'schedule' && steps.due.outputs.due != 'true'
+        run: |
+          {
+            echo "## SVG collector schedule check"
+            echo
+            echo "- Provider fetch skipped: latest successful private transfer is still within the freshness target."
+            echo "- Previous success: ${{ steps.due.outputs.last_success_generated_at_utc }}"
+            echo "- Age: ${{ steps.due.outputs.age_minutes }} min"
+            echo "- Threshold: ${{ steps.due.outputs.threshold_minutes }} min"
+            echo "- Reason: ${{ steps.due.outputs.reason }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/setup-python@v5
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         with:
           python-version: '3.12'
+
       - name: Install dependency
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         run: python -m pip install --disable-pip-version-check requests
+
       - name: Fetch SVG endpoints and record exact request diagnostics
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         env:
           WEATHERLINK_API_KEY: ${{ secrets.WEATHERLINK_API_KEY }}
           WEATHERLINK_API_SECRET: ${{ secrets.WEATHERLINK_API_SECRET }}
         run: python src/fetch_svg_weatherlink.py
+
       - name: Audit endpoint results, observation age and five-minute archive continuity
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: |
-          python src/audit_integrity.py             --kind svg             --input work/svg_bundle.json             --json-out work/svg_integrity.json             --md-out work/svg_integrity.md
+          python src/audit_integrity.py \
+            --kind svg \
+            --input work/svg_bundle.json \
+            --json-out work/svg_integrity.json \
+            --md-out work/svg_integrity.md
+
       - name: Publish detailed integrity report in Actions summary
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: cat work/svg_integrity.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Transfer payload and integrity history to private repository
-        if: always() && github.event_name != 'push'
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-svg-validation]'))
         shell: bash
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -60,8 +95,9 @@ jobs:
             args+=(--file work/svg_bundle.json)
           fi
           python src/push_private.py "${args[@]}"
+
       - name: Fail workflow when granular integrity audit found errors
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: |
           python - <<'PY'
           import json
