@@ -37,6 +37,14 @@ def content_meta(repo,path,h):
     if not r.ok:raise RuntimeError(f"GET content {path} -> HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
+def decoded_json_content(meta):
+    if not meta or not meta.get("content"): return None
+    try:
+        raw=base64.b64decode(meta["content"].replace("\n",""))
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
 def same_existing(repo,path,content,h,gz=False):
     meta=content_meta(repo,path,h)
     if not meta:return False
@@ -98,7 +106,38 @@ def main():
 
     report=json.loads(Path(args.integrity_json).read_text(encoding="utf-8"))
     when=parse_time(report.get("generated_at_utc"));stamp=when.strftime("%Y%m%dT%H%M%SZ");day=f"{when:%Y/%m/%d}"
-    md_raw=Path(args.integrity_md).read_bytes()
+
+    latest_path=f"data/inbox/public_collector/integrity/{args.kind}/latest.json"
+    previous=decoded_json_content(content_meta(repo,latest_path,h))
+    nominal_minutes=60 if args.kind=="svg" else 180
+    continuity={
+        "nominal_target_interval_minutes":nominal_minutes,
+        "previous_attempt_generated_at_utc":None,
+        "interval_since_previous_attempt_minutes":None,
+        "interval_exceeds_1_5x_nominal":None,
+        "estimated_whole_nominal_intervals_without_attempt":None,
+    }
+    if previous and previous.get("generated_at_utc"):
+        prev_time=parse_time(previous["generated_at_utc"])
+        gap=max(0.0,(when-prev_time).total_seconds()/60)
+        continuity.update(
+            previous_attempt_generated_at_utc=prev_time.isoformat(),
+            interval_since_previous_attempt_minutes=round(gap,2),
+            interval_exceeds_1_5x_nominal=gap>nominal_minutes*1.5,
+            estimated_whole_nominal_intervals_without_attempt=max(0,int(gap//nominal_minutes)-1),
+        )
+    report["invocation_continuity"]=continuity
+
+    md_text=Path(args.integrity_md).read_text(encoding="utf-8")
+    md_text += (
+        "\n## Collector invocation continuity\n\n"
+        f"- Nominal target interval: {nominal_minutes} min.\n"
+        f"- Previous transferred attempt: {continuity['previous_attempt_generated_at_utc']}.\n"
+        f"- Interval since previous attempt: {continuity['interval_since_previous_attempt_minutes']} min.\n"
+        f"- Interval >1.5× nominal: {continuity['interval_exceeds_1_5x_nominal']}.\n"
+        f"- Estimated complete nominal slots without an attempt: {continuity['estimated_whole_nominal_intervals_without_attempt']}.\n"
+    )
+    md_raw=md_text.encode("utf-8")
     files=[]
 
     if args.file and Path(args.file).exists():
@@ -116,6 +155,11 @@ def main():
         {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest.json","content":report_raw,"immutable":False},
         {"path":f"reports/collector-health/{args.kind}/latest.md","content":md_raw,"immutable":False},
     ]
+    if report.get("bundle_ready_for_private_revalidation"):
+        files += [
+            {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest_success.json","content":report_raw,"immutable":False},
+            {"path":f"reports/collector-health/{args.kind}/latest_success.md","content":md_raw,"immutable":False},
+        ]
     result=atomic_commit(repo,files,f"collector: ingest {args.kind} attempt {stamp}",h)
     result.update({"kind":args.kind,"stamp":stamp})
     print(json.dumps(result,indent=2))
