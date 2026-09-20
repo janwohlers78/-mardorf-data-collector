@@ -204,7 +204,12 @@
         "other_max_hours": 51
       },
       "ECMWF-IFS": {
-        "default_max_hours": 120
+        "main_cycle_hours": [
+          0,
+          12
+        ],
+        "main_max_hours": 120,
+        "other_max_hours": 90
       },
       "GFS": {
         "default_max_hours": 120
@@ -261,9 +266,9 @@
           18
         ],
         "project_required_horizon_hours": 120,
-        "documented_06_18_open_data_horizon_hours": 144,
+        "documented_06_18_open_data_horizon_hours": 90,
         "currentness_limit_hours": 14,
-        "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule; the preceding run can legitimately exceed 12 h age while the next public cycle is still being disseminated."
+        "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule. Around cycle transitions the preceding public run can legitimately exceed 12 h age; a 14 h limit covers the documented dissemination window with a small margin while retaining a strict freshness gate."
       }
     }
   },
