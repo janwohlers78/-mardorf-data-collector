@@ -54,9 +54,9 @@ class IntegrityAuditTests(unittest.TestCase):
 
     def test_short_icon_eu_cycle_excludes_out_of_horizon_placeholders(self):
         now=datetime.now(timezone.utc)
-        run=now.replace(hour=15,minute=0,second=0,microsecond=0)
-        if run>now:
-            run-=timedelta(days=1)
+        run=(now-timedelta(hours=1)).replace(minute=0,second=0,microsecond=0)
+        if run.hour in (0,6,12,18):
+            run-=timedelta(hours=1)
         rows=[]
         for lead in POLICY["model_policy"]["project_desired_leads"]["ICON-EU"]:
             rec={
