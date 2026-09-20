@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,json,math
+import argparse,hashlib,json,math
 from collections import Counter
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 
 POLICY=Path("config/integrity_policy.json")
@@ -50,11 +50,24 @@ def audit_models(path,cfg,now):
         issues.append(issue("MODEL_BUNDLE_FILE_NOT_CREATED","ERROR","collector","bundle",
             "No model payload exists to transfer or ingest.",path=str(path)))
         return make_report("models",now,sources,issues,False,{"input_file_present":False})
-    try:d=json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw=path.read_bytes()
+        d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("MODEL_BUNDLE_JSON_INVALID","ERROR","collector","bundle",
             "The model payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
         return make_report("models",now,sources,issues,False,{"input_file_present":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+
+    spot=d.get("spot") if isinstance(d.get("spot"),dict) else {}
+    expected_spot=cfg["model_policy"]["spot"]
+    spot_lat=spot.get("lat",spot.get("latitude"));spot_lon=spot.get("lon",spot.get("longitude"))
+    if (not finite(spot_lat) or not finite(spot_lon)
+            or abs(float(spot_lat)-float(expected_spot["latitude"]))>1e-6
+            or abs(float(spot_lon)-float(expected_spot["longitude"]))>1e-6):
+        issues.append(issue("MODEL_SPOT_IDENTITY_MISMATCH","ERROR","collector","spot_identity",
+            "The model payload coordinates do not match the configured Mardorf collection point.",
+            observed_spot=spot,expected_spot=expected_spot))
 
     mode=d.get("mode","unknown")
     retrieval=dt(d.get("retrieved_at_utc") or d.get("horizon_extension_retrieved_at_utc") or d.get("dwd_additional_retrieved_at_utc") or d.get("extended_retrieved_at_utc"))
@@ -73,8 +86,11 @@ def audit_models(path,cfg,now):
     all_attempts=[x for x in (d.get("provider_attempts") or []) if isinstance(x,dict)]
     for model in cfg["model_policy"]["project_desired_leads"]:
         recs=[r for r in (d.get("models") or {}).get(model,[]) if isinstance(r,dict)]
-        lead_rows={};duplicates=[];invalid_lead_rows=[]
+        lead_rows={};duplicates=[];invalid_lead_rows=[];model_identity_failures=[]
         for r in recs:
+            if r.get("model")!=model:
+                model_identity_failures.append({"declared_model":r.get("model"),"expected_model":model,
+                                                "forecast_lead_hours":r.get("forecast_lead_hours")})
             try:lead=int(r.get("forecast_lead_hours"))
             except Exception:
                 invalid_lead_rows.append({"valid_time_utc":r.get("valid_time_utc"),"value":r.get("forecast_lead_hours")});continue
@@ -234,6 +250,10 @@ def audit_models(path,cfg,now):
         elif len(run_values)>1:
             issues.append(issue("MULTIPLE_MODEL_RUNS_IN_ONE_SOURCE_BUNDLE","ERROR",model,"run_identity",
                 "One source bundle contains records from more than one cycle.",run_time_values=run_values))
+        if model_identity_failures:
+            issues.append(issue("MODEL_RECORD_IDENTITY_MISMATCH","ERROR",model,"record_identity",
+                "One or more records are stored under a model key that does not match their declared model identity.",
+                affected_records=model_identity_failures))
         if invalid_lead_rows:
             issues.append(issue("FORECAST_LEAD_VALUE_INVALID","ERROR",model,"coverage",
                 "Some forecast records cannot be assigned to a lead time.",rows=invalid_lead_rows))
@@ -321,7 +341,7 @@ def audit_models(path,cfg,now):
             "optional_weather_context_warnings":optional_source_warnings,
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
-            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,field_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures]) and run is not None,
+            "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures]) and run is not None,
             "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 
@@ -336,6 +356,7 @@ def audit_models(path,cfg,now):
         "retrieved_at_utc":retrieval.isoformat() if retrieval else None,
         "complete_current_independent_families":complete_current_families,
         "minimum_two_complete_current_independent_families_met":usable,
+        **input_meta,
     })
 
 def audit_svg(path,cfg,now):
@@ -344,11 +365,19 @@ def audit_svg(path,cfg,now):
         issues.append(issue("SVG_BUNDLE_FILE_NOT_CREATED","ERROR","SVG-42374","bundle",
             "No SVG payload exists to transfer or ingest.",path=str(path)))
         return make_report("svg",now,sources,issues,False,{"input_file_present":False})
-    try:d=json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw=path.read_bytes()
+        d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("SVG_BUNDLE_JSON_INVALID","ERROR","SVG-42374","bundle",
             "The SVG payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
         return make_report("svg",now,sources,issues,False,{"input_file_present":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+    station=d.get("station") if isinstance(d.get("station"),dict) else {}
+    if station.get("id")!=cfg["svg_policy"]["station_id"]:
+        issues.append(issue("SVG_STATION_ID_MISMATCH","ERROR","SVG-42374","station_identity",
+            "The WeatherLink payload station identity does not match the configured operational SVG station.",
+            observed_station=station,expected_station_id=cfg["svg_policy"]["station_id"]))
 
     reqs=d.get("request_diagnostics") or {}
     for endpoint in ("current","historic","stations"):
@@ -388,8 +417,11 @@ def audit_svg(path,cfg,now):
             "No parseable current observation timestamp is present.",value=(obs or {}).get("time_utc")))
 
     rows=[x for x in (d.get("recent_historic_observations") or []) if isinstance(x,dict)]
-    parsed=[dt(x.get("time_utc")) for x in rows];times=sorted({x for x in parsed if x is not None})
-    duplicates=len(rows)-len(times);cadence=float(cfg["svg_policy"]["archive_expected_cadence_minutes"]);gaps=[]
+    parsed=[dt(x.get("time_utc")) for x in rows]
+    valid_times=[x for x in parsed if x is not None]
+    times=sorted(set(valid_times))
+    invalid_history_times=[{"index":i,"value":rows[i].get("time_utc")} for i,x in enumerate(parsed) if x is None]
+    duplicates=len(valid_times)-len(times);cadence=float(cfg["svg_policy"]["archive_expected_cadence_minutes"]);gaps=[]
     for a,b in zip(times,times[1:]):
         diff=(b-a).total_seconds()/60
         if diff>cadence+0.1:
@@ -398,6 +430,11 @@ def audit_svg(path,cfg,now):
 
     requested=d.get("requested_history_window") or {}
     requested_start=dt(requested.get("start_utc"));requested_end=dt(requested.get("end_utc"))
+    future_tol=float(cfg["svg_policy"]["maximum_timestamp_future_tolerance_minutes"])
+    future_history_times=[x.isoformat() for x in valid_times if x>now+timedelta(minutes=future_tol)]
+    outside_window_times=[]
+    if requested_start and requested_end:
+        outside_window_times=[x.isoformat() for x in valid_times if x<requested_start or x>requested_end]
     expected_slots=None;start_gap=None;end_gap=None;coverage_ratio=None
     if requested_start and requested_end and requested_end>requested_start:
         expected_slots=max(1,int((requested_end-requested_start).total_seconds()//(cadence*60)))
@@ -410,6 +447,20 @@ def audit_svg(path,cfg,now):
         issues.append(issue("SVG_HISTORIC_WINDOW_RETURNED_ZERO_RECORDS","ERROR","SVG-42374","historic_window",
             "The routine WeatherLink history request returned no normalized archive records.",
             requested_history_hours=cfg["svg_policy"]["routine_history_hours"]))
+    if invalid_history_times:
+        issues.append(issue("SVG_HISTORIC_TIMESTAMP_INVALID","ERROR","SVG-42374","historic_window",
+            "One or more WeatherLink archive rows contain an unparseable timestamp.",
+            affected_rows=invalid_history_times))
+    if future_history_times:
+        issues.append(issue("SVG_HISTORIC_TIMESTAMP_TOO_FAR_IN_FUTURE","ERROR","SVG-42374","historic_window",
+            "One or more WeatherLink archive timestamps are implausibly in the future.",
+            affected_times_utc=future_history_times,allowed_future_minutes=future_tol))
+    if outside_window_times:
+        issues.append(issue("SVG_HISTORIC_TIMESTAMP_OUTSIDE_REQUEST_WINDOW","ERROR","SVG-42374","historic_window",
+            "One or more WeatherLink archive timestamps fall outside the requested history window.",
+            affected_times_utc=outside_window_times,
+            requested_start_utc=requested_start.isoformat() if requested_start else None,
+            requested_end_utc=requested_end.isoformat() if requested_end else None))
     if duplicates:
         issues.append(issue("SVG_HISTORIC_DUPLICATE_TIMESTAMPS","WARN","SVG-42374","historic_window",
             "Repeated archive timestamps were present in the normalized history.",duplicate_record_count=duplicates))
@@ -433,7 +484,8 @@ def audit_svg(path,cfg,now):
     current_req_ok=bool((reqs.get("current") or {}).get("success"))
     historic_req_ok=bool((reqs.get("historic") or {}).get("success"))
     within_age=age is not None and age<=float(cfg["svg_policy"]["maximum_current_state_age_minutes"]) and age>=-float(cfg["svg_policy"]["maximum_timestamp_future_tolerance_minutes"])
-    usable=current_req_ok and historic_req_ok and within_age and ot is not None
+    historic_time_integrity_ok=not invalid_history_times and not future_history_times and not outside_window_times
+    usable=current_req_ok and historic_req_ok and within_age and ot is not None and bool(rows) and historic_time_integrity_ok
     sources["SVG-42374"]={
         "current_request":reqs.get("current"),"historic_request":reqs.get("historic"),"metadata_request":reqs.get("stations"),
         "current_observation_time_utc":ot.isoformat() if ot else None,
@@ -454,7 +506,8 @@ def audit_svg(path,cfg,now):
         "uncovered_end_minutes":round(end_gap,2) if end_gap is not None else None,
     }
     return make_report("svg",now,sources,issues,usable,{
-        "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc")
+        "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc"),
+        **input_meta,
     })
 
 def audit_skm(path,cfg,now):
@@ -464,11 +517,19 @@ def audit_skm(path,cfg,now):
         issues.append(issue("SKM_BUNDLE_FILE_NOT_CREATED","ERROR",station,"bundle",
             "The optional MeteoMap probe produced no payload.",path=str(path)))
         return make_report("skm",now,sources,issues,False,{"input_file_present":False,"non_blocking":True})
-    try:d=json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw=path.read_bytes()
+        d=json.loads(raw.decode("utf-8"))
     except Exception as e:
         issues.append(issue("SKM_BUNDLE_JSON_INVALID","ERROR",station,"bundle",
             "The optional SKM payload cannot be parsed.",exception_type=type(e).__name__,exception_message=str(e),path=str(path)))
         return make_report("skm",now,sources,issues,False,{"input_file_present":True,"non_blocking":True})
+    input_meta={"input_payload_sha256":hashlib.sha256(raw).hexdigest(),"input_payload_bytes":len(raw)}
+    skm_station=d.get("station") if isinstance(d.get("station"),dict) else {}
+    if skm_station.get("id")!=pcfg.get("station_id"):
+        issues.append(issue("SKM_STATION_ID_MISMATCH","ERROR",station,"station_identity",
+            "The MeteoMap payload station identity does not match the configured legacy diagnostic station.",
+            observed_station=skm_station,expected_station_id=pcfg.get("station_id")))
 
     if str(d.get("source_timestamp_timezone"))!="UTC":
         issues.append(issue("SKM_TIMESTAMP_SEMANTICS_NOT_UTC","ERROR",station,"timestamps",
@@ -543,7 +604,8 @@ def audit_skm(path,cfg,now):
     return make_report("skm",now,sources,issues,required_ok,{
         "input_file_present":True,"retrieved_at_utc":d.get("retrieved_at_utc"),
         "non_blocking":True,"operational_authority":False,
-        "interpretation":"SKM is a legacy north-shore diagnostic only; PASS/FAIL never gates primary SVG/model evaluation."
+        "interpretation":"SKM is a legacy north-shore diagnostic only; PASS/FAIL never gates primary SVG/model evaluation.",
+        **input_meta,
     })
 
 def markdown(report):
