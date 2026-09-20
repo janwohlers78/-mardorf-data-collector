@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   collect:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
     runs-on: ubuntu-latest
     timeout-minutes: 65
     env:
@@ -32,6 +33,8 @@ jobs:
       FULL_VALIDATION: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[full-model-validation]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Check whether scheduled model collection is due
         id: due
