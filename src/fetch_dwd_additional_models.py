@@ -46,20 +46,25 @@ def directory_hrefs(model,hh,param):
 
 
 def discover_cycle(model,required_lead=0):
-    """Newest DWD cycle which really contains the requested farthest lead."""
-    per_cycle={}; diagnostics=[]
+    """Newest DWD cycle with all wind-critical fields at the requested lead."""
+    critical=('u_10m','v_10m','vmax_10m');coverage={};diagnostics=[]
     for hh in ['00','03','06','09','12','15','18','21']:
-        try:
-            _,hrefs=directory_hrefs(model,hh,'u_10m')
-            for href in hrefs:
-                m=re.search(r'_(20\d{8})_(\d{3})_',href)
-                if m: per_cycle.setdefault(m.group(1),set()).add(int(m.group(2)))
-        except Exception as e:
-            diagnostics.append((hh,type(e).__name__))
-    eligible=[cycle for cycle,ls in per_cycle.items() if required_lead in ls]
+        for param in critical:
+            try:
+                _,hrefs=directory_hrefs(model,hh,param)
+                for href in hrefs:
+                    m=re.search(r'_(20\d{8})_(\d{3})_',href)
+                    if m:
+                        coverage.setdefault(m.group(1),{}).setdefault(param,set()).add(int(m.group(2)))
+            except Exception as e:
+                diagnostics.append((hh,param,type(e).__name__))
+    eligible=[
+        cycle for cycle,fields in coverage.items()
+        if all(required_lead in fields.get(param,set()) for param in critical)
+    ]
     if not eligible:
-        summary=sorted((c,max(ls) if ls else -1) for c,ls in per_cycle.items())[-20:]
-        raise RuntimeError(f'No {model} cycle with lead {required_lead} discovered; cycles={summary}; errors={diagnostics}')
+        summary={cycle:{p:max(v) if v else -1 for p,v in fields.items()} for cycle,fields in sorted(coverage.items())[-20:]}
+        raise RuntimeError(f'No {model} cycle with all critical fields at lead {required_lead}; cycles={summary}; errors={diagnostics}')
     return max(eligible)
 
 
