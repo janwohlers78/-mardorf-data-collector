@@ -49,7 +49,15 @@ def request_chart(kind,day):
             raise RuntimeError("payload is not an object")
         if payload.get("error") not in (0,"0",False,None):
             raise RuntimeError(str(payload.get("message") or payload.get("error")))
-        diag.update(success=True,exception_type=None,exception_message=None)
+        pdata=payload.get("data") if isinstance(payload.get("data"),dict) else {}
+        rows=pdata.get("data") if isinstance(pdata.get("data"),list) else []
+        diag.update(
+            success=True,exception_type=None,exception_message=None,
+            provider_error=payload.get("error"),provider_message=payload.get("message"),
+            provider_disabled=payload.get("disabled"),provider_label=payload.get("label"),
+            provider_series_record_count=len(rows),
+            provider_hourly_direction_html_bytes=len((pdata.get("hourlyDir") or "").encode("utf-8")) if isinstance(pdata.get("hourlyDir"),str) else 0,
+        )
         return diag,payload
     except Exception as e:
         diag.update(success=False,elapsed_seconds=round(time.monotonic()-started,3),
@@ -132,8 +140,13 @@ def main():
             }
         else:
             req=[x for x in bundle["requests"] if x.get("kind")==kind]
+            successful_http=[x for x in req if x.get("success")]
+            payload_empty=bool(successful_http) and all(int(x.get("provider_series_record_count") or 0)==0 for x in successful_http)
             bundle["endpoint_summary"][kind]={
                 "success":False,"record_count_nonfuture":0,
+                "http_requests_succeeded":bool(successful_http),
+                "provider_returned_empty_measurement_series":payload_empty,
+                "provider_payload_semantics":"HTTP/JSON success with zero measurement rows" if payload_empty else "request_or_parse_failure",
                 "request_attempts":req,
             }
 
