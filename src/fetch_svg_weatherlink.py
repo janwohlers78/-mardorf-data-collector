@@ -6,9 +6,10 @@ written even when acquisition fails so the integrity stage can report the failed
 attempt precisely and transfer that failure report to the private repository.
 """
 from __future__ import annotations
-import json,os,time
+import json,os,re,time
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
+from urllib.parse import quote,quote_plus
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -34,8 +35,12 @@ S.mount("https://",adapter)
 def redact_sensitive(value,*secrets):
     text=str(value)
     for secret in secrets:
-        if secret:
-            text=text.replace(str(secret),"***REDACTED***")
+        if not secret:continue
+        raw=str(secret)
+        for variant in {raw,quote(raw,safe=""),quote_plus(raw)}:
+            if variant:text=text.replace(variant,"***REDACTED***")
+    text=re.sub(r"([?&]api-key=)[^&\\s'\"]+",r"\\1***REDACTED***",text,flags=re.I)
+    text=re.sub(r"(X-Api-Secret[=: ]+)[^,;\\s'\"]+",r"\\1***REDACTED***",text,flags=re.I)
     return text
 
 def request(path,key,secret,params=None):
