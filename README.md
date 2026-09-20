@@ -10,8 +10,9 @@ to the private repository.
 ## Schedules
 
 - Model due-check: hourly at minute 23 UTC. A full provider acquisition is started only when the last successful private model transfer is at least 150 minutes old; read failures are fail-open.
-- SVG/SKM due-check: at minutes 13, 33 and 53 UTC. A real WeatherLink/SKM acquisition is started only when the last successful SVG transfer is at least 50 minutes old; read failures are fail-open.
-- Wunstorf/ETNW secondary acquisition: 00:47, 04:47, 10:47, 16:47 and 22:47 UTC. Both child sources are independently audited and transferred; only after both integrity gates pass is one `secondary-batch-receipt-v1` published to the private repository.
+- SVG/SKM due-check: at minutes 13, 33 and 53 UTC. A real WeatherLink/SKM acquisition is started only when the last successful SVG transfer is at least 40 minutes old; read failures are fail-open.
+- Wunstorf/ETNW secondary due-check: 00:47, 04:47, 10:47, 16:47 and 22:47 UTC. Acquisition runs only when the latest verified `secondary-batch-receipt-v1` is at least 240 minutes old; read failures are fail-open. Both child sources are independently audited and transferred, and only after both integrity gates pass is one batch receipt published.
+- External scheduler redundancy uses `.github/workflows/collector-watchdog.yml`. It dispatches the same three collector workflows with `watchdog=true`; each child workflow applies its normal freshness gate, so external triggering never creates a second acquisition path.
 - Code changes normally run a reduced model smoke test only; smoke tests never transfer data. Explicit `[full-model-validation]` / `[full-svg-validation]` validation commits exercise the full production transfer path.
 
 ## Sources
