@@ -31,6 +31,13 @@ retry=Retry(total=4,connect=4,read=4,status=4,backoff_factor=1.0,
 adapter=HTTPAdapter(max_retries=retry,pool_connections=4,pool_maxsize=4)
 S.mount("https://",adapter)
 
+def redact_sensitive(value,*secrets):
+    text=str(value)
+    for secret in secrets:
+        if secret:
+            text=text.replace(str(secret),"***REDACTED***")
+    return text
+
 def request(path,key,secret,params=None):
     diag={"request_path":path,"success":False,"http_status":None,"elapsed_seconds":None,
           "response_bytes":None,"exception_type":None,"exception_message":None}
@@ -56,7 +63,7 @@ def request(path,key,secret,params=None):
     except Exception as e:
         diag["elapsed_seconds"]=round(time.monotonic()-t0,3)
         diag["exception_type"]=type(e).__name__
-        diag["exception_message"]=str(e)
+        diag["exception_message"]=redact_sensitive(e,key,secret)
         return None,diag
 
 def f(v):
