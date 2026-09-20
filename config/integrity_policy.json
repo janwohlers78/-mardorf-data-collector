@@ -251,10 +251,13 @@
     "ensemble_identity": {
       "ICON-D2-EPS": {
         "expected_member_count": 20,
-        "required_verification_status": "verified_stable_metadata_dwd_cycle_and_native_grid",
+        "required_verification_status": "verified_stable_metadata_dwd_cycle_and_spatial_provenance",
         "minimum_open_meteo_settling_seconds": 600,
-        "require_native_grid_parity": true,
-        "response_run_binding_policy": "strong_indirect_bracketed_required_until_provider_embedded_identity_available"
+        "response_run_binding_policy": "strong_indirect_bracketed_required_until_provider_embedded_identity_available",
+        "require_spatial_provenance": true,
+        "require_dwd_eps_native_grid_identity": true,
+        "require_dwd_regular_grid_coordinate_parity": true,
+        "native_coordinate_parity_policy": "not_claimed_without_external_DWD_native_grid_definition"
       }
     },
     "provider_policy_notes": {
