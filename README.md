@@ -9,9 +9,9 @@ to the private repository.
 
 ## Schedules
 
-- Model collection: every 3 hours at minute 35 UTC.
-- SVG WeatherLink collection: hourly at minute 17 UTC.
-- Code changes run a reduced model smoke test only; smoke tests never transfer data.
+- Model due-check: hourly at minute 23 UTC. A full provider acquisition is started only when the last successful private model transfer is at least 150 minutes old; read failures are fail-open.
+- SVG/SKM due-check: at minutes 13, 33 and 53 UTC. A real WeatherLink/SKM acquisition is started only when the last successful SVG transfer is at least 50 minutes old; read failures are fail-open.
+- Code changes normally run a reduced model smoke test only; smoke tests never transfer data. Explicit `[full-model-validation]` / `[full-svg-validation]` validation commits exercise the full production transfer path.
 
 ## Sources
 
@@ -19,11 +19,12 @@ The collector currently retrieves:
 
 - DWD ICON-D2
 - DWD ICON-EU
-- DWD ICON-D2-EPS through the named Open-Meteo extraction endpoint
+- DWD ICON-D2-EPS through the named Open-Meteo extraction endpoint, with Open-Meteo run metadata checked before/after, >=10-minute settling, DWD cycle confirmation and exact 20-member identity
 - ECMWF IFS Open Data
 - NOAA/NCEP GFS
 - NOAA/NCEP GEFS control
 - WeatherLink v2 station 42374 (SVG)
+- MeteoMap station 898 (SKM), optional legacy diagnostic only; its failure never gates SVG or model evaluation
 
 It performs only source extraction and basic unit/metadata normalization needed
 to preserve an unambiguous transfer bundle. Forecast weighting, traffic-light
@@ -49,6 +50,7 @@ permissions.
 - Generated files live only in the ephemeral runner `work/` directory.
 - Transfer bundles are gzip-compressed and written directly to the private
   repository below `data/inbox/public_collector/`.
+- Every publication uses `private-transfer-readback-v1`: the unpublished private commit tree and blobs are read back byte-for-byte before `main` is moved. Gzip payloads are decompressed and checked against the original SHA-256. A separate private transfer receipt records the successful readback.
 - Scheduled workflows run from the default branch.
 - Pull requests from forks do not receive repository secrets.
 - The private repository remains the authoritative persistent store and performs
@@ -75,6 +77,10 @@ For SVG the report records each WeatherLink endpoint separately with HTTP status
 request duration, response size and exception details, plus current observation
 age and exact five-minute archive-window coverage.
 
+For optional SKM the report distinguishes HTTP/request failure from a valid
+MeteoMap JSON response whose measurement series is empty. SKM status is persisted
+but never participates in the primary SVG/model success gate.
+
 The Markdown report is written to the GitHub Actions job summary. When private
 transfer is configured, both JSON and Markdown reports are also persisted in the
 private repository, including failed acquisition attempts.
@@ -85,6 +91,6 @@ A code push still calls every one of the six model source paths, but only for a
 representative lead set. This is not an Actions-minutes optimization: public
 standard runners are free. It prevents a sequence of ordinary code commits from
 repeatedly downloading the same full 120-hour provider datasets and unnecessarily
-loading DWD, ECMWF and NOAA services. The scheduled three-hour production runs
-remain full acquisitions and therefore continuously exercise the complete
-operational horizon.
+loading DWD, ECMWF and NOAA services. Scheduled due runs remain full acquisitions and therefore continuously exercise
+the complete provider horizon that is actually published for the selected model
+cycle.
