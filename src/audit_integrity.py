@@ -108,6 +108,14 @@ def audit_eps_hourly_source(source,run,expected_members=20):
         failures.append({"reason":"hourly_source_requested_coordinate_mismatch","value":requested})
     if not finite(rlat) or not finite(rlon) or abs(float(rlat)-52.4942)>.05 or abs(float(rlon)-9.3418)>.08:
         failures.append({"reason":"hourly_source_returned_coordinate_implausible","value":returned})
+    if source.get("native_grid_parity_verified") is not True:
+        failures.append({"reason":"hourly_source_native_grid_parity_unverified",
+                         "evidence":source.get("native_grid_parity_evidence")})
+    binding=source.get("response_run_binding") if isinstance(source.get("response_run_binding"),dict) else {}
+    if source.get("response_bound_run_identity_verified") is not True and binding.get("status")!="strong_indirect_bracketed_not_provider_embedded":
+        failures.append({"reason":"hourly_source_run_binding_evidence_missing",
+                         "response_bound_run_identity_verified":source.get("response_bound_run_identity_verified"),
+                         "response_run_binding":binding})
     summary={
         "present":True,"run_time_utc":sr.isoformat() if sr else None,
         "time_count":len(times),"required_run_through_48h_complete":not missing_hours and bool(times),
@@ -116,6 +124,9 @@ def audit_eps_hourly_source(source,run,expected_members=20):
         "retrieved_at_utc":source.get("retrieved_at_utc"),
         "requested_coordinate":requested,"returned_coordinate":returned,
         "cycle_evidence":source.get("cycle_evidence"),
+        "native_grid_parity_verified":source.get("native_grid_parity_verified"),
+        "response_bound_run_identity_verified":source.get("response_bound_run_identity_verified"),
+        "response_run_binding_status":binding.get("status"),
         "failure_count":len(failures),
     }
     return failures,summary
