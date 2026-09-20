@@ -212,6 +212,36 @@ def main():
         ]
     result=atomic_commit(repo,files,f"collector: ingest {args.kind} attempt {stamp}",h)
     result.update({"kind":args.kind,"stamp":stamp})
+
+    # Persist the verification result separately. The payload/report commit cannot
+    # contain its own post-build readback result without circularly changing the
+    # bytes that were just verified.
+    if result.get("commit_sha") and result.get("readback_verified"):
+        verified_at=datetime.now(timezone.utc)
+        receipt={
+            "schema_version":1,
+            "method_version":"private-transfer-readback-v1",
+            "kind":args.kind,
+            "stamp":stamp,
+            "verified_at_utc":verified_at.isoformat(),
+            "verified_data_commit_sha":result["commit_sha"],
+            "readback_verified":True,
+            "readback_protocol":result.get("readback_protocol"),
+            "readback":result.get("readback") or [],
+            "payload_source_sha256":(report.get("private_payload") or {}).get("source_sha256"),
+            "payload_destination":(report.get("private_payload") or {}).get("destination"),
+            "publication_semantics":"The verified data commit was read back before publication; this receipt is a child commit recording that completed verification.",
+        }
+        receipt_raw=(json.dumps(receipt,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+        receipt_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/{day}/receipt_{stamp}.json"
+        receipt_files=[
+            {"path":receipt_path,"content":receipt_raw,"immutable":True},
+            {"path":f"data/inbox/public_collector/transfer_receipts/{args.kind}/latest.json","content":receipt_raw,"immutable":False},
+        ]
+        rr=atomic_commit(repo,receipt_files,f"collector: record verified {args.kind} transfer {stamp}",h)
+        result["transfer_receipt_path"]=receipt_path
+        result["transfer_receipt_commit_sha"]=rr.get("commit_sha")
+        result["transfer_receipt_commit_readback_verified"]=rr.get("readback_verified",False)
     print(json.dumps(result,indent=2))
 
 if __name__=="__main__":
