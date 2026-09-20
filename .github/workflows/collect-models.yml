@@ -1,4 +1,5 @@
-# validation_generation: eps-readback-skm-audit-final-grib-header-20260920\nname: Collect model source data
+# validation_generation: eps-readback-skm-audit-final-grib-header-20260920
+name: Collect model source data
 
 on:
   push:
