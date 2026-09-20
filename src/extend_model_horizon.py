@@ -117,7 +117,8 @@ def fetch_ifs(data):
         if actual!=base:
             raise RuntimeError(f'ECMWF run identity mismatch: expected {base.isoformat()} got {actual.isoformat()}')
         bylead={int(x):{} for x in leads}
-        for n,s,v in nearest(p):
+        rows=nearest(p);point=rows.point
+        for n,s,v in rows:
             lead=step_end(s)
             if lead not in bylead:continue
             bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
@@ -131,6 +132,7 @@ def fetch_ifs(data):
             rec={'model':'ECMWF-IFS','run_time_utc':actual.isoformat(),'forecast_lead_hours':lead,
                  'valid_time_utc':(actual+timedelta(hours=lead)).isoformat(),
                  'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,
+                 'forecast_coordinate_or_grid_point':point,
                  'source_request':{'date':base.strftime('%Y%m%d'),'time':base.hour,'steps':leads}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
