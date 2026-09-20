@@ -39,8 +39,8 @@ def redact_sensitive(value,*secrets):
         raw=str(secret)
         for variant in {raw,quote(raw,safe=""),quote_plus(raw)}:
             if variant:text=text.replace(variant,"***REDACTED***")
-    text=re.sub(r"([?&]api-key=)[^&\\s'\"]+",r"\\1***REDACTED***",text,flags=re.I)
-    text=re.sub(r"(X-Api-Secret[=: ]+)[^,;\\s'\"]+",r"\\1***REDACTED***",text,flags=re.I)
+    text=re.sub(r"([?&]api-key=)[^&\s\'\"]+",lambda m:m.group(1)+"***REDACTED***",text,flags=re.I)
+    text=re.sub(r"(X-Api-Secret[=: ]+)[^,;\s\'\"]+",lambda m:m.group(1)+"***REDACTED***",text,flags=re.I)
     return text
 
 def request(path,key,secret,params=None):
