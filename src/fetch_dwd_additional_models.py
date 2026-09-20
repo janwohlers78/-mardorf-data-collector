@@ -89,31 +89,83 @@ def find_dwd_file(model,cycle,lead,param):
     return sorted(candidates)[0]
 
 
-def verify_dwd_native_grid_parity(url,base,valid,returned):
-    """Bind the Open-Meteo extraction point to the direct DWD regular-lat-lon grid."""
-    with tempfile.TemporaryDirectory() as td:
-        r=S.get(url,timeout=90);r.raise_for_status()
-        p=Path(td)/'dwd_grid_parity.grib2'
-        p.write_bytes(bz2.decompress(r.content))
-        assert_grib_valid_time(p,base,valid,'ICON-D2-EPS native-grid parity')
-        rows=nearest(p)
-        native=rows.point
-    rlat=float(returned['latitude']);rlon=float(returned['longitude'])
-    nlat=float(native['latitude']);nlon=float(native['longitude'])
-    dlat=abs(rlat-nlat);dlon=abs(rlon-nlon)
-    # ICON-D2 regular-lat-lon spacing is ~0.02 degrees. Requiring agreement
-    # within just over half a grid interval rejects a neighbouring-cell shift.
-    tolerance=0.011
-    verified=dlat<=tolerance and dlon<=tolerance
+def find_dwd_regular_file(model,cycle,lead,param):
+    directory,hrefs=directory_hrefs(model,cycle[-2:],param)
+    lead_token=f'_{lead:03d}_'
+    candidates=[
+        h for h in hrefs
+        if cycle in h and lead_token in h and param in h and 'regular-lat-lon' in h
+    ]
+    if not candidates:
+        raise RuntimeError(
+            f'No regular-lat-lon DWD file for {model} cycle={cycle} lead={lead} param={param}; directory={directory}')
+    return sorted(candidates)[0]
+
+
+def grib_grid_identity(path):
+    keys='gridType,gridDefinitionTemplateNumber,numberOfGridUsed,uuidOfHGrid,numberOfDataPoints'
+    p=subprocess.run(['grib_get','-p',keys,str(path)],capture_output=True,text=True,check=True)
+    line=next((x.strip() for x in p.stdout.splitlines() if x.strip()),'')
+    parts=line.split()
+    if len(parts)<5:
+        raise RuntimeError(f'Cannot parse DWD grid identity: {p.stdout[:700]} {p.stderr[:700]}')
     return {
-        'verified':verified,
-        'method':'direct_dwd_grib_nearest_grid_point_vs_open_meteo_returned_coordinate_v1',
-        'dwd_source_url':url,
-        'dwd_native_grid_point':native,
+        'grid_type':parts[0],
+        'grid_definition_template_number':parts[1],
+        'number_of_grid_used':parts[2],
+        'uuid_of_horizontal_grid':parts[3],
+        'number_of_data_points':parts[4],
+    }
+
+
+def verify_dwd_spatial_provenance(eps_url,regular_url,base,valid,returned):
+    """Verify DWD EPS native-grid identity and DWD 0.02-degree extraction-grid parity.
+
+    DWD publishes ICON-D2-EPS on the native triangular grid. ecCodes cannot
+    perform a nearest-point lookup on that GRIB without the separate external
+    native-grid definition. We therefore verify the EPS file's own grid identity
+    directly, and independently compare the API-returned coordinate with DWD's
+    operational regular-lat-lon ICON-D2 output grid for the same cycle/lead.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        eps_resp=S.get(eps_url,timeout=90);eps_resp.raise_for_status()
+        eps_path=Path(td)/'eps_native.grib2'
+        eps_path.write_bytes(bz2.decompress(eps_resp.content))
+        assert_grib_valid_time(eps_path,base,valid,'ICON-D2-EPS native grid identity')
+        native_identity=grib_grid_identity(eps_path)
+        native_ok=(
+            native_identity.get('grid_type') in ('unstructured_grid','unstructured')
+            and str(native_identity.get('number_of_grid_used'))=='47'
+            and bool(native_identity.get('uuid_of_horizontal_grid'))
+        )
+
+        reg_resp=S.get(regular_url,timeout=90);reg_resp.raise_for_status()
+        reg_path=Path(td)/'d2_regular.grib2'
+        reg_path.write_bytes(bz2.decompress(reg_resp.content))
+        assert_grib_valid_time(reg_path,base,valid,'ICON-D2 regular grid parity')
+        rows=nearest(reg_path)
+        dwd_regular_point=rows.point
+
+    rlat=float(returned['latitude']);rlon=float(returned['longitude'])
+    nlat=float(dwd_regular_point['latitude']);nlon=float(dwd_regular_point['longitude'])
+    dlat=abs(rlat-nlat);dlon=abs(rlon-nlon)
+    tolerance=0.011
+    coordinate_ok=dlat<=tolerance and dlon<=tolerance
+    return {
+        'verified':bool(native_ok and coordinate_ok),
+        'method':'direct_eps_native_grid_identity_plus_dwd_regular_grid_coordinate_parity_v2',
+        'eps_native_grid_identity_verified':bool(native_ok),
+        'eps_native_grid_identity':native_identity,
+        'eps_native_source_url':eps_url,
+        'dwd_regular_grid_coordinate_parity_verified':bool(coordinate_ok),
+        'dwd_regular_source_url':regular_url,
+        'dwd_regular_grid_point':dwd_regular_point,
         'open_meteo_returned_coordinate':{'latitude':rlat,'longitude':rlon},
         'absolute_difference_degrees':{'latitude':round(dlat,6),'longitude':round(dlon,6)},
         'tolerance_degrees_each_axis':tolerance,
         'valid_time_utc':valid.isoformat(),
+        'native_coordinate_parity_claimed':False,
+        'native_coordinate_parity_limitation':'DWD ICON-D2-EPS Open Data is native triangular grid and requires the external DWD grid-definition file for direct native-point localization; no native-coordinate equality is claimed.',
     }
 
 
@@ -277,8 +329,12 @@ def _hourly_source(payload,r,meta_before,meta_after,identity,base,response_retri
         'cycle_evidence':'stable_provider_metadata_association',
         'response_bound_run_identity_verified':False,
         'response_run_binding':identity['response_run_binding'],
-        'native_grid_parity_verified':bool(identity['native_grid_parity'].get('verified')),
-        'native_grid_parity_evidence':identity['native_grid_parity'],
+        'spatial_provenance_verified':bool(identity['spatial_provenance'].get('verified')),
+        'spatial_provenance_evidence':identity['spatial_provenance'],
+        'dwd_eps_native_grid_identity_verified':bool(identity['spatial_provenance'].get('eps_native_grid_identity_verified')),
+        'dwd_regular_grid_coordinate_parity_verified':bool(identity['spatial_provenance'].get('dwd_regular_grid_coordinate_parity_verified')),
+        'native_grid_parity_verified':False,
+        'native_grid_parity_limitation':identity['spatial_provenance'].get('native_coordinate_parity_limitation'),
         'run_time_utc':base.isoformat(),
         'times_utc':times,
         'columns':columns,
@@ -341,10 +397,11 @@ def fetch_icon_d2_eps_bundle(leads):
         raise RuntimeError(f'Open-Meteo ICON-D2-EPS run metadata changed during acquisition: {changed}')
 
     returned={'latitude':float(payload.get('latitude')),'longitude':float(payload.get('longitude'))}
-    grid_parity=verify_dwd_native_grid_parity(
-        dwd_confirmation,base,base+timedelta(hours=farthest),returned)
-    if not grid_parity['verified']:
-        raise RuntimeError(f'ICON-D2-EPS Open-Meteo/DWD native grid parity failed: {grid_parity}')
+    dwd_regular_confirmation=find_dwd_regular_file('icon-d2',cycle,farthest,'u_10m')
+    spatial_provenance=verify_dwd_spatial_provenance(
+        dwd_confirmation,dwd_regular_confirmation,base,base+timedelta(hours=farthest),returned)
+    if not spatial_provenance['verified']:
+        raise RuntimeError(f'ICON-D2-EPS spatial provenance verification failed: {spatial_provenance}')
 
     response_hash=hashlib.sha256(
         json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
@@ -361,7 +418,7 @@ def fetch_icon_d2_eps_bundle(leads):
     }
 
     identity={
-        'verification_status':'verified_stable_metadata_dwd_cycle_and_native_grid',
+        'verification_status':'verified_stable_metadata_dwd_cycle_and_spatial_provenance',
         'model_id':'dwd_icon_d2_eps',
         'run_time_utc':base.isoformat(),
         'metadata_before':meta_before,
@@ -369,7 +426,7 @@ def fetch_icon_d2_eps_bundle(leads):
         'settling_age_seconds_at_request':round(settle_age,1),
         'minimum_settling_seconds':EPS_SETTLING_SECONDS,
         'dwd_cycle_confirmation_url':dwd_confirmation,
-        'native_grid_parity':grid_parity,
+        'spatial_provenance':spatial_provenance,
         'response_run_binding':response_run_binding,
         'expected_member_ids':expected_ids,
         'source_timestamp_semantics':'Open-Meteo last_run_initialisation_time is the model reference/initialisation time',

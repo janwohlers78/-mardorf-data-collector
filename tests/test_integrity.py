@@ -41,7 +41,7 @@ class IntegrityAuditTests(unittest.TestCase):
                     meta={"last_run_initialisation_time_utc":run.isoformat(),
                           "last_run_availability_time_utc":(run-timedelta(minutes=20)).isoformat()}
                     rec["source_run_identity"]={
-                        "verification_status":"verified_stable_metadata_dwd_cycle_and_native_grid",
+                        "verification_status":"verified_stable_metadata_dwd_cycle_and_spatial_provenance",
                         "run_time_utc":run.isoformat(),
                         "metadata_before":meta,"metadata_after":meta,
                         "settling_age_seconds_at_request":1200,
@@ -73,8 +73,16 @@ class IntegrityAuditTests(unittest.TestCase):
             "columns":columns,
             "requested_coordinate":{"latitude":52.4942,"longitude":9.3418},
             "returned_coordinate":{"latitude":52.5,"longitude":9.34},
-            "native_grid_parity_verified":True,
-            "native_grid_parity_evidence":{"verified":True,"method":"test"},
+            "spatial_provenance_verified":True,
+            "spatial_provenance_evidence":{
+                "verified":True,
+                "eps_native_grid_identity_verified":True,
+                "eps_native_grid_identity":{"grid_type":"unstructured_grid","number_of_grid_used":"47","uuid_of_horizontal_grid":"test"},
+                "dwd_regular_grid_coordinate_parity_verified":True,
+            },
+            "dwd_eps_native_grid_identity_verified":True,
+            "dwd_regular_grid_coordinate_parity_verified":True,
+            "native_grid_parity_verified":False,
             "response_bound_run_identity_verified":False,
             "response_run_binding":{
                 "status":"strong_indirect_bracketed_not_provider_embedded",
@@ -99,9 +107,14 @@ class IntegrityAuditTests(unittest.TestCase):
         self.assertTrue(any(x["reason"]=="hourly_source_member_identity_mismatch" for x in failures),failures)
 
         broken=json.loads(json.dumps(source))
-        broken["native_grid_parity_verified"]=False
+        broken["spatial_provenance_verified"]=False
         failures,_=audit_eps_hourly_source(broken,run,20)
-        self.assertTrue(any(x["reason"]=="hourly_source_native_grid_parity_unverified" for x in failures),failures)
+        self.assertTrue(any(x["reason"]=="hourly_source_spatial_provenance_unverified" for x in failures),failures)
+
+        broken=json.loads(json.dumps(source))
+        broken["dwd_regular_grid_coordinate_parity_verified"]=False
+        failures,_=audit_eps_hourly_source(broken,run,20)
+        self.assertTrue(any(x["reason"]=="hourly_source_dwd_regular_grid_coordinate_parity_unverified" for x in failures),failures)
 
         broken=json.loads(json.dumps(source))
         broken["response_run_binding"]={}
