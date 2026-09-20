@@ -32,8 +32,13 @@ def evaluate_latest_success(stamp,now,max_age_minutes,future_tolerance_minutes=F
     due=age>=float(max_age_minutes)
     return due,("last_success_age_exceeds_threshold" if due else "last_success_within_threshold"),age
 
+def state_pointer(kind):
+    if kind=="secondary":
+        return ("data/inbox/public_collector/transfer_receipts/secondary/latest.json","source_generated_at_utc")
+    return (f"data/inbox/public_collector/integrity/{kind}/latest_success.json","generated_at_utc")
+
 def fetch_latest(repo,kind,token):
-    path=f"data/inbox/public_collector/integrity/{kind}/latest_success.json"
+    path,_=state_pointer(kind)
     url=f"{API}/repos/{repo}/contents/{path}?ref=main"
     req=urllib.request.Request(url,headers={
         "Authorization":f"Bearer {token}",
@@ -48,7 +53,7 @@ def fetch_latest(repo,kind,token):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--kind",required=True,choices=("svg","models","wunstorf","etnw"))
+    ap.add_argument("--kind",required=True,choices=("svg","models","wunstorf","etnw","secondary"))
     ap.add_argument("--max-age-minutes",required=True,type=float)
     args=ap.parse_args()
     token=os.getenv("PRIVATE_REPO_TOKEN","")
@@ -61,7 +66,8 @@ def main():
     else:
         try:
             latest=fetch_latest(repo,args.kind,token)
-            stamp=latest.get("generated_at_utc")
+            _,stamp_field=state_pointer(args.kind)
+            stamp=latest.get(stamp_field)
             if not stamp:
                 reason="latest_success_has_no_generated_at_fail_open"
             else:
