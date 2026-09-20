@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Atomically transfer one collector attempt into the private repository.
 
-One collector run creates at most one private commit containing the optional
-gzip payload, immutable JSON/Markdown integrity reports and latest pointers.
+Immutable payload/integrity history is published only after exact-byte readback.
+Mutable latest pointers are monotonic by source generation time. A successful
+latest_success pointer is finalized only in the same verified commit as the
+transfer receipt, so scheduling can never treat an unreceipted attempt as success.
 """
 from __future__ import annotations
 import argparse,base64,gzip,hashlib,json,os,time
@@ -14,15 +16,19 @@ API="https://api.github.com"
 DEFAULT_REPO="janwohlers78/mardorf-kitevorhersage"
 
 def parse_time(value):
-    if not value:return datetime.now(timezone.utc)
-    return datetime.fromisoformat(str(value).replace("Z","+00:00")).astimezone(timezone.utc)
+    if not value:
+        raise ValueError("required timestamp is missing")
+    x=datetime.fromisoformat(str(value).replace("Z","+00:00"))
+    if x.tzinfo is None:
+        raise ValueError(f"timestamp must be timezone-aware: {value!r}")
+    return x.astimezone(timezone.utc)
 
 def hdr(token):
     return {
         "Authorization":f"Bearer {token}",
         "Accept":"application/vnd.github+json",
         "X-GitHub-Api-Version":"2022-11-28",
-        "User-Agent":"mardorf-data-collector/1.2",
+        "User-Agent":"mardorf-data-collector/1.3",
     }
 
 def req(method,url,h,**kwargs):
@@ -37,13 +43,16 @@ def content_meta(repo,path,h):
     if not r.ok:raise RuntimeError(f"GET content {path} -> HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
+def decoded_bytes(meta):
+    if not meta or not meta.get("content"):return None
+    try:return base64.b64decode(meta["content"].replace("\n",""))
+    except Exception:return None
+
 def decoded_json_content(meta):
-    if not meta or not meta.get("content"): return None
-    try:
-        raw=base64.b64decode(meta["content"].replace("\n",""))
-        return json.loads(raw.decode("utf-8"))
-    except Exception:
-        return None
+    raw=decoded_bytes(meta)
+    if raw is None:return None
+    try:return json.loads(raw.decode("utf-8"))
+    except Exception:return None
 
 def same_existing(repo,path,content,h,gz=False):
     """Return the existing blob SHA only when immutable bytes match exactly."""
@@ -75,6 +84,22 @@ def blob(repo,content,h):
     d=req("POST",f"{API}/repos/{repo}/git/blobs",h,json={
         "content":base64.b64encode(content).decode("ascii"),"encoding":"base64"})
     return d["sha"]
+
+def monotonic_allows(repo,item,h):
+    guard=item.get("monotonic_guard")
+    if not isinstance(guard,dict):return True
+    current=decoded_json_content(content_meta(repo,guard["path"],h))
+    if not current:return True
+    current_value=current.get(guard["field"])
+    if not current_value:return True
+    current_time=parse_time(current_value);incoming=parse_time(guard["incoming_time"])
+    return incoming>=current_time
+
+def mutable_already_exact(repo,item,h):
+    if item.get("immutable"):return False
+    meta=content_meta(repo,item["path"],h)
+    raw=decoded_bytes(meta)
+    return raw==item["content"] if raw is not None else False
 
 def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
     commit=req("GET",f"{API}/repos/{repo}/git/commits/{commit_sha}",h)
@@ -110,20 +135,34 @@ def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
     return receipts
 
 def atomic_commit(repo,files,message,h):
-    # Immutable collisions are accepted only on exact-byte equality. Existing
-    # immutable blobs are still included in the candidate tree/readback so a
-    # recovery commit verifies the complete transfer, not only latest pointers.
-    pending=list(files)
+    """Commit with exact-byte readback and race-safe monotonic mutable pointers."""
+    all_items=list(files)
     blob_shas={}
-    for item in pending:
+    for item in all_items:
         existing_sha=None
         if item.get("immutable"):
-            existing_sha=same_existing(
-                repo,item["path"],item["content"],h,item.get("gzip",False))
+            existing_sha=same_existing(repo,item["path"],item["content"],h,item.get("gzip",False))
         blob_shas[item["path"]]=existing_sha or blob(repo,item["content"],h)
+
     last=None
     for attempt in range(4):
         try:
+            # Re-evaluate pointer ordering on every retry, after any competing
+            # writer may have advanced main.
+            pending=[]
+            skipped_stale=[]
+            skipped_exact=[]
+            for item in all_items:
+                if not monotonic_allows(repo,item,h):
+                    skipped_stale.append(item["path"]);continue
+                if mutable_already_exact(repo,item,h):
+                    skipped_exact.append(item["path"]);continue
+                pending.append(item)
+            if not pending:
+                return {"idempotent":True,"commit_sha":None,"paths":[],
+                        "skipped_stale_paths":skipped_stale,"skipped_exact_paths":skipped_exact,
+                        "readback_verified":True,"readback":[]}
+
             ref=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
             parent=ref["object"]["sha"]
             commit=req("GET",f"{API}/repos/{repo}/git/commits/{parent}",h)
@@ -143,6 +182,7 @@ def atomic_commit(repo,files,message,h):
                         f"got {published.get('object',{}).get('sha')}")
                 return {"idempotent":False,"commit_sha":new_commit["sha"],
                         "paths":[x["path"] for x in pending],
+                        "skipped_stale_paths":skipped_stale,"skipped_exact_paths":skipped_exact,
                         "readback_verified":True,
                         "readback_protocol":"unpublished_commit_tree_and_blob_exact_byte_readback_then_main_ref_update",
                         "readback":receipts}
@@ -151,6 +191,10 @@ def atomic_commit(repo,files,message,h):
             last=f"{type(e).__name__}: {e}"
         time.sleep(2**attempt)
     raise RuntimeError(f"atomic private transfer failed after retries: {last}")
+
+def pointer_item(path,content,guard_path,field,incoming_time):
+    return {"path":path,"content":content,"immutable":False,
+            "monotonic_guard":{"path":guard_path,"field":field,"incoming_time":incoming_time}}
 
 def main():
     ap=argparse.ArgumentParser()
@@ -165,9 +209,15 @@ def main():
     repo=os.getenv("PRIVATE_REPO",DEFAULT_REPO);h=hdr(token)
 
     report=json.loads(Path(args.integrity_json).read_text(encoding="utf-8"))
-    when=parse_time(report.get("generated_at_utc"));stamp=when.strftime("%Y%m%dT%H%M%SZ");day=f"{when:%Y/%m/%d}"
+    if report.get("kind")!=args.kind:
+        raise RuntimeError(f"integrity report kind mismatch: report={report.get('kind')!r} argument={args.kind!r}")
+    when=parse_time(report.get("generated_at_utc"))
+    stamp=when.strftime("%Y%m%dT%H%M%S")+f"{when.microsecond:06d}Z"
+    day=f"{when:%Y/%m/%d}"
 
     latest_path=f"data/inbox/public_collector/integrity/{args.kind}/latest.json"
+    latest_success_path=f"data/inbox/public_collector/integrity/{args.kind}/latest_success.json"
+    receipt_latest_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/latest.json"
     previous=decoded_json_content(content_meta(repo,latest_path,h))
     nominal_minutes=180 if args.kind=="models" else 60
     continuity={
@@ -176,29 +226,31 @@ def main():
         "interval_since_previous_attempt_minutes":None,
         "interval_exceeds_1_5x_nominal":None,
         "estimated_whole_nominal_intervals_without_attempt":None,
+        "incoming_attempt_older_than_current_latest":False,
     }
     if previous and previous.get("generated_at_utc"):
-        # If the data commit of this exact attempt already reached main but the
-        # receipt publication failed, preserve the original continuity fields
-        # so the immutable integrity bytes remain reproducible on retry.
         if (previous.get("generated_at_utc")==report.get("generated_at_utc")
                 and isinstance(previous.get("invocation_continuity"),dict)):
             continuity=dict(previous["invocation_continuity"])
         else:
             prev_time=parse_time(previous["generated_at_utc"])
-            gap=max(0.0,(when-prev_time).total_seconds()/60)
+            raw_gap=(when-prev_time).total_seconds()/60
+            gap=max(0.0,raw_gap)
             continuity.update(
                 previous_attempt_generated_at_utc=prev_time.isoformat(),
-                interval_since_previous_attempt_minutes=round(gap,2),
-                interval_exceeds_1_5x_nominal=gap>nominal_minutes*1.5,
+                interval_since_previous_attempt_minutes=round(raw_gap,2),
+                interval_exceeds_1_5x_nominal=raw_gap>nominal_minutes*1.5,
                 estimated_whole_nominal_intervals_without_attempt=max(0,int(gap//nominal_minutes)-1),
+                incoming_attempt_older_than_current_latest=raw_gap<0,
             )
     report["invocation_continuity"]=continuity
     report["private_transfer_protocol"]={
-        "method_version":"private-transfer-readback-v1",
+        "method_version":"private-transfer-readback-v2",
         "publish_gate":"unpublished commit tree + blob exact-byte readback before main ref update",
-        "gzip_payload_check":"compressed bytes exact; decompressed SHA-256 must equal source_sha256",
-        "main_ref_check":"main must resolve to the verified commit immediately after update"
+        "gzip_payload_check":"compressed bytes exact; decompressed SHA-256 must equal audit input SHA-256",
+        "latest_pointer_rule":"generated_at_utc is monotonic across concurrent/retried writers",
+        "success_pointer_rule":"latest_success is published only with a verified transfer receipt",
+        "main_ref_check":"main must resolve to the verified commit immediately after update",
     }
 
     md_text=Path(args.integrity_md).read_text(encoding="utf-8")
@@ -207,49 +259,63 @@ def main():
         f"- Nominal target interval: {nominal_minutes} min.\n"
         f"- Previous transferred attempt: {continuity['previous_attempt_generated_at_utc']}.\n"
         f"- Interval since previous attempt: {continuity['interval_since_previous_attempt_minutes']} min.\n"
+        f"- Incoming attempt older than current latest: {continuity['incoming_attempt_older_than_current_latest']}.\n"
         f"- Interval >1.5× nominal: {continuity['interval_exceeds_1_5x_nominal']}.\n"
         f"- Estimated complete nominal slots without an attempt: {continuity['estimated_whole_nominal_intervals_without_attempt']}.\n"
     )
     md_raw=md_text.encode("utf-8")
-    files=[]
+    immutable_files=[]
 
+    audit_sha=report.get("input_payload_sha256")
+    audit_bytes=report.get("input_payload_bytes")
+    input_present=bool(report.get("input_file_present"))
+    if input_present and (not args.file or not Path(args.file).exists()):
+        raise RuntimeError("integrity report says input payload exists but transfer payload file is missing")
     if args.file and Path(args.file).exists():
-        raw=Path(args.file).read_bytes();packed=gzip.compress(raw,compresslevel=9,mtime=0)
+        raw=Path(args.file).read_bytes()
+        source_sha=hashlib.sha256(raw).hexdigest()
+        if not audit_sha or source_sha!=audit_sha:
+            raise RuntimeError(f"audited payload SHA mismatch: audit={audit_sha} transfer={source_sha}")
+        if audit_bytes is None or int(audit_bytes)!=len(raw):
+            raise RuntimeError(f"audited payload byte-count mismatch: audit={audit_bytes} transfer={len(raw)}")
+        packed=gzip.compress(raw,compresslevel=9,mtime=0)
         dest=f"data/inbox/public_collector/{args.kind}/{day}/{args.kind}_{stamp}.json.gz"
         report["private_payload"]={
-            "destination":dest,"source_sha256":hashlib.sha256(raw).hexdigest(),
+            "destination":dest,"source_sha256":source_sha,
             "source_bytes":len(raw),"compressed_bytes":len(packed)}
-        files.append({"path":dest,"content":packed,"immutable":True,"gzip":True,
-                      "source_sha256":report["private_payload"]["source_sha256"]})
+        immutable_files.append({"path":dest,"content":packed,"immutable":True,"gzip":True,
+                                "source_sha256":source_sha})
+    elif audit_sha or audit_bytes:
+        raise RuntimeError("integrity report contains payload identity but no transfer payload file was supplied")
 
     report_raw=(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
-    files += [
-        {"path":f"data/inbox/public_collector/integrity/{args.kind}/{day}/integrity_{stamp}.json","content":report_raw,"immutable":True},
-        {"path":f"reports/collector-health/{args.kind}/{day}/integrity_{stamp}.md","content":md_raw,"immutable":True},
-        {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest.json","content":report_raw,"immutable":False},
-        {"path":f"reports/collector-health/{args.kind}/latest.md","content":md_raw,"immutable":False},
+    immutable_files += [
+        {"path":f"data/inbox/public_collector/integrity/{args.kind}/{day}/integrity_{stamp}.json",
+         "content":report_raw,"immutable":True},
+        {"path":f"reports/collector-health/{args.kind}/{day}/integrity_{stamp}.md",
+         "content":md_raw,"immutable":True},
     ]
-    if report.get("bundle_ready_for_private_revalidation"):
-        files += [
-            {"path":f"data/inbox/public_collector/integrity/{args.kind}/latest_success.json","content":report_raw,"immutable":False},
-            {"path":f"reports/collector-health/{args.kind}/latest_success.md","content":md_raw,"immutable":False},
-        ]
+    attempt_pointer_files=[
+        pointer_item(latest_path,report_raw,latest_path,"generated_at_utc",when.isoformat()),
+        pointer_item(f"reports/collector-health/{args.kind}/latest.md",md_raw,
+                     latest_path,"generated_at_utc",when.isoformat()),
+    ]
     receipt_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/{day}/receipt_{stamp}.json"
 
-    # A rerun after a fully completed transfer is idempotent. Validate the
-    # persisted receipt against the current immutable source bytes before exit.
+    # Fully completed reruns validate immutable evidence and then repair/finalize
+    # mutable pointers if a previous invocation stopped after the receipt commit.
     existing_receipt=decoded_json_content(content_meta(repo,receipt_path,h))
     if existing_receipt is not None:
         expected_payload_sha=(report.get("private_payload") or {}).get("source_sha256")
         if (existing_receipt.get("kind")!=args.kind
                 or existing_receipt.get("stamp")!=stamp
+                or existing_receipt.get("source_generated_at_utc")!=when.isoformat()
                 or existing_receipt.get("readback_verified") is not True
-                or existing_receipt.get("payload_source_sha256")!=expected_payload_sha):
+                or existing_receipt.get("payload_source_sha256")!=expected_payload_sha
+                or existing_receipt.get("audit_input_payload_sha256")!=audit_sha):
             raise RuntimeError(f"existing transfer receipt conflicts with this attempt: {receipt_path}")
         rb={x.get("path"):x for x in (existing_receipt.get("readback") or []) if isinstance(x,dict)}
-        for item in files:
-            if not item.get("immutable"):
-                continue
+        for item in immutable_files:
             existing_sha=same_existing(repo,item["path"],item["content"],h,item.get("gzip",False))
             if not existing_sha:
                 raise RuntimeError(f"receipt exists but immutable transfer path is missing: {item['path']}")
@@ -260,46 +326,71 @@ def main():
                 raise RuntimeError(f"receipt SHA-256 does not match immutable bytes: {item['path']}")
             if item.get("gzip") and item.get("source_sha256") and proof.get("decompressed_sha256")!=item["source_sha256"]:
                 raise RuntimeError(f"receipt decompressed SHA-256 mismatch for immutable payload: {item['path']}")
+
+        receipt_raw=(json.dumps(existing_receipt,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
+        finalize=[
+            pointer_item(receipt_latest_path,receipt_raw,receipt_latest_path,
+                         "source_generated_at_utc",when.isoformat())
+        ]
+        if report.get("bundle_ready_for_private_revalidation"):
+            finalize += [
+                pointer_item(latest_success_path,report_raw,latest_success_path,
+                             "generated_at_utc",when.isoformat()),
+                pointer_item(f"reports/collector-health/{args.kind}/latest_success.md",md_raw,
+                             latest_success_path,"generated_at_utc",when.isoformat()),
+            ]
+        repaired=atomic_commit(repo,finalize,f"collector: finalize verified {args.kind} transfer {stamp}",h)
         print(json.dumps({
             "idempotent":True,"kind":args.kind,"stamp":stamp,
             "transfer_receipt_path":receipt_path,
             "verified_data_commit_sha":existing_receipt.get("verified_data_commit_sha"),
             "readback_verified":True,
+            "finalization":repaired,
             "reason":"existing_receipt_and_immutable_bytes_reverified",
         },indent=2))
         return
 
-    result=atomic_commit(repo,files,f"collector: ingest {args.kind} attempt {stamp}",h)
+    data_files=immutable_files+attempt_pointer_files
+    result=atomic_commit(repo,data_files,f"collector: ingest {args.kind} attempt {stamp}",h)
     result.update({"kind":args.kind,"stamp":stamp})
 
-    # Persist the verification result separately. The payload/report commit cannot
-    # contain its own post-build readback result without circularly changing the
-    # bytes that were just verified.
     if result.get("commit_sha") and result.get("readback_verified"):
         verified_at=datetime.now(timezone.utc)
         receipt={
-            "schema_version":1,
-            "method_version":"private-transfer-readback-v1",
+            "schema_version":2,
+            "method_version":"private-transfer-readback-v2",
             "kind":args.kind,
             "stamp":stamp,
+            "source_generated_at_utc":when.isoformat(),
             "verified_at_utc":verified_at.isoformat(),
             "verified_data_commit_sha":result["commit_sha"],
             "readback_verified":True,
             "readback_protocol":result.get("readback_protocol"),
             "readback":result.get("readback") or [],
             "payload_source_sha256":(report.get("private_payload") or {}).get("source_sha256"),
+            "audit_input_payload_sha256":audit_sha,
             "payload_destination":(report.get("private_payload") or {}).get("destination"),
-            "publication_semantics":"The verified data commit was read back before publication; this receipt is a child commit recording that completed verification.",
+            "publication_semantics":"The data commit was read back before publication; latest_success is finalized only in this receipt-bearing child commit.",
         }
         receipt_raw=(json.dumps(receipt,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
         receipt_files=[
             {"path":receipt_path,"content":receipt_raw,"immutable":True},
-            {"path":f"data/inbox/public_collector/transfer_receipts/{args.kind}/latest.json","content":receipt_raw,"immutable":False},
+            pointer_item(receipt_latest_path,receipt_raw,receipt_latest_path,
+                         "source_generated_at_utc",when.isoformat()),
         ]
+        if report.get("bundle_ready_for_private_revalidation"):
+            receipt_files += [
+                pointer_item(latest_success_path,report_raw,latest_success_path,
+                             "generated_at_utc",when.isoformat()),
+                pointer_item(f"reports/collector-health/{args.kind}/latest_success.md",md_raw,
+                             latest_success_path,"generated_at_utc",when.isoformat()),
+            ]
         rr=atomic_commit(repo,receipt_files,f"collector: record verified {args.kind} transfer {stamp}",h)
         result["transfer_receipt_path"]=receipt_path
         result["transfer_receipt_commit_sha"]=rr.get("commit_sha")
         result["transfer_receipt_commit_readback_verified"]=rr.get("readback_verified",False)
+        result["success_pointer_finalized"]=bool(report.get("bundle_ready_for_private_revalidation"))
+        result["receipt_finalization"]=rr
     print(json.dumps(result,indent=2))
 
 if __name__=="__main__":
