@@ -3,13 +3,18 @@ import unittest
 from datetime import datetime,timezone
 from unittest.mock import patch
 
-from grib_identity import assert_grib_batch_leads,assert_grib_valid_time
+from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time
 
 UTC=timezone.utc
 
 class GribIdentityTests(unittest.TestCase):
     def completed(self,stdout):
         return subprocess.CompletedProcess(["grib_get"],0,stdout=stdout,stderr="")
+
+    def test_step_range_minute_units_are_converted_to_hours(self):
+        self.assertEqual(_step_end_hours("0m-15m"),0.25)
+        self.assertEqual(_step_end_hours("0m-90m"),1.5)
+        self.assertEqual(_step_end_hours("0-3"),3.0)
 
     @patch("grib_identity.subprocess.run")
     def test_single_file_validity_matches_provider_metadata(self,mock_run):
