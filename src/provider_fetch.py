@@ -78,7 +78,7 @@ def fetch_base(d,model,test):
     elif model=="GEFS-control":
         rows=extra.fetch_gefs(leads)
     elif model=="ICON-EU":
-        rows=dwd.fetch_icon_eu(leads)
+        rows=dwd.fetch_icon_eu(leads,required_cycle_lead=None if test else 120)
     elif model=="ICON-D2-EPS":
         rows=dwd.fetch_icon_d2_eps(leads)
     else:
