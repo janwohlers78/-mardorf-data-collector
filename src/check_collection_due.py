@@ -10,6 +10,7 @@ from datetime import datetime,timezone
 
 API="https://api.github.com"
 DEFAULT_REPO="janwohlers78/mardorf-kitevorhersage"
+FUTURE_TOLERANCE_MINUTES=15
 
 def parse_time(value):
     x=datetime.fromisoformat(str(value).replace("Z","+00:00"))
@@ -21,6 +22,15 @@ def output(name,value):
         with open(p,"a",encoding="utf-8") as f:
             f.write(f"{name}={value}\n")
     print(f"{name}={value}")
+
+def evaluate_latest_success(stamp,now,max_age_minutes,future_tolerance_minutes=FUTURE_TOLERANCE_MINUTES):
+    t=parse_time(stamp)
+    age=(now-t).total_seconds()/60
+    if age < -float(future_tolerance_minutes):
+        return True,"latest_success_timestamp_future_fail_open",age
+    age=max(0.0,age)
+    due=age>=float(max_age_minutes)
+    return due,("last_success_age_exceeds_threshold" if due else "last_success_within_threshold"),age
 
 def fetch_latest(repo,kind,token):
     path=f"data/inbox/public_collector/integrity/{kind}/latest_success.json"
@@ -55,10 +65,7 @@ def main():
             if not stamp:
                 reason="latest_success_has_no_generated_at_fail_open"
             else:
-                t=parse_time(stamp)
-                age=max(0.0,(now-t).total_seconds()/60)
-                due=age>=args.max_age_minutes
-                reason="last_success_age_exceeds_threshold" if due else "last_success_within_threshold"
+                due,reason,age=evaluate_latest_success(stamp,now,args.max_age_minutes)
         except urllib.error.HTTPError as e:
             reason=f"private_latest_success_http_{e.code}_fail_open"
         except Exception as e:
