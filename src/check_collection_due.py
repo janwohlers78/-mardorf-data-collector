@@ -48,7 +48,7 @@ def fetch_latest(repo,kind,token):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--kind",required=True,choices=("svg","models"))
+    ap.add_argument("--kind",required=True,choices=("svg","models","wunstorf","etnw"))
     ap.add_argument("--max-age-minutes",required=True,type=float)
     args=ap.parse_args()
     token=os.getenv("PRIVATE_REPO_TOKEN","")

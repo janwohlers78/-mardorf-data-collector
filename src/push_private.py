@@ -200,7 +200,7 @@ def pointer_item(path,content,guard_path,field,incoming_time):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--kind",required=True,choices=("models","svg","skm"))
+    ap.add_argument("--kind",required=True,choices=("models","svg","skm","wunstorf","etnw"))
     ap.add_argument("--file")
     ap.add_argument("--integrity-json",required=True)
     ap.add_argument("--integrity-md",required=True)
@@ -221,7 +221,7 @@ def main():
     latest_success_path=f"data/inbox/public_collector/integrity/{args.kind}/latest_success.json"
     receipt_latest_path=f"data/inbox/public_collector/transfer_receipts/{args.kind}/latest.json"
     previous=decoded_json_content(content_meta(repo,latest_path,h))
-    nominal_minutes=180 if args.kind=="models" else 60
+    nominal_minutes={"models":180,"svg":60,"skm":60,"wunstorf":300,"etnw":300}[args.kind]
     continuity={
         "nominal_target_interval_minutes":nominal_minutes,
         "previous_attempt_generated_at_utc":None,

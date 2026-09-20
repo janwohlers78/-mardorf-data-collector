@@ -295,5 +295,20 @@
       "gust"
     ],
     "non_blocking": true
+  },
+  "wunstorf_policy": {
+    "station_id": "05715",
+    "recent_reference_minutes": 180,
+    "warning_archive_age_minutes": 2880,
+    "maximum_timestamp_future_tolerance_minutes": 15,
+    "role": "historical_land_reference_not_operational_realtime_source"
+  },
+  "etnw_policy": {
+    "station_icao": "ETNW",
+    "fresh_target_minutes": 120,
+    "maximum_current_age_minutes": 360,
+    "maximum_timestamp_future_tolerance_minutes": 15,
+    "role": "current_operational_Wunstorf_redundancy",
+    "gust_optional": true
   }
 }

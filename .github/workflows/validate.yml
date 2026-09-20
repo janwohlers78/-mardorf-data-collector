@@ -3,6 +3,8 @@ name: Validate collector code
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
     paths:
       - 'src/**'
       - '.github/workflows/**'
