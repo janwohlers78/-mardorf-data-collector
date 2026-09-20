@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 from ecmwf.opendata import Client
 LAT=52.4942; LON=9.3418
-ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','aws')
+ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
 
 def nearest(path):
