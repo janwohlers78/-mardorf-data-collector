@@ -61,6 +61,39 @@ def blob(repo,content,h):
         "content":base64.b64encode(content).decode("ascii"),"encoding":"base64"})
     return d["sha"]
 
+def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
+    commit=req("GET",f"{API}/repos/{repo}/git/commits/{commit_sha}",h)
+    tree=req("GET",f"{API}/repos/{repo}/git/trees/{commit['tree']['sha']}?recursive=1",h)
+    entries={x.get("path"):x for x in tree.get("tree",[]) if x.get("type")=="blob"}
+    receipts=[]
+    for item in pending:
+        path=item["path"];expected_blob=blob_shas[path]
+        entry=entries.get(path)
+        if not entry:
+            raise RuntimeError(f"readback tree path missing before publish: {path}")
+        if entry.get("sha")!=expected_blob:
+            raise RuntimeError(f"readback tree/blob SHA mismatch for {path}: expected {expected_blob} got {entry.get('sha')}")
+        b=req("GET",f"{API}/repos/{repo}/git/blobs/{expected_blob}",h)
+        if b.get("encoding")!="base64":
+            raise RuntimeError(f"readback blob encoding unexpected for {path}: {b.get('encoding')}")
+        raw=base64.b64decode((b.get("content") or "").replace("\n",""))
+        if raw!=item["content"]:
+            raise RuntimeError(
+                f"readback content mismatch for {path}: expected_sha256={hashlib.sha256(item['content']).hexdigest()} "
+                f"got_sha256={hashlib.sha256(raw).hexdigest()} expected_bytes={len(item['content'])} got_bytes={len(raw)}")
+        receipt={"path":path,"blob_sha":expected_blob,"bytes":len(raw),
+                 "sha256":hashlib.sha256(raw).hexdigest(),"exact_bytes_match":True}
+        if item.get("gzip"):
+            unpacked=gzip.decompress(raw)
+            receipt["decompressed_bytes"]=len(unpacked)
+            receipt["decompressed_sha256"]=hashlib.sha256(unpacked).hexdigest()
+            if item.get("source_sha256") and receipt["decompressed_sha256"]!=item["source_sha256"]:
+                raise RuntimeError(
+                    f"readback decompressed SHA mismatch for {path}: expected {item['source_sha256']} "
+                    f"got {receipt['decompressed_sha256']}")
+        receipts.append(receipt)
+    return receipts
+
 def atomic_commit(repo,files,message,h):
     # Immutable entries may already exist after an earlier successful retry.
     pending=[]
@@ -82,10 +115,20 @@ def atomic_commit(repo,files,message,h):
                 "base_tree":commit["tree"]["sha"],"tree":tree_entries})
             new_commit=req("POST",f"{API}/repos/{repo}/git/commits",h,json={
                 "message":message,"tree":tree["sha"],"parents":[parent]})
+            receipts=verify_unpublished_commit(repo,new_commit["sha"],pending,blob_shas,h)
             r=requests.patch(f"{API}/repos/{repo}/git/refs/heads/main",headers=h,timeout=60,
                              json={"sha":new_commit["sha"],"force":False})
             if r.ok:
-                return {"idempotent":False,"commit_sha":new_commit["sha"],"paths":[x["path"] for x in pending]}
+                published=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
+                if published.get("object",{}).get("sha")!=new_commit["sha"]:
+                    raise RuntimeError(
+                        f"published main ref mismatch: expected {new_commit['sha']} "
+                        f"got {published.get('object',{}).get('sha')}")
+                return {"idempotent":False,"commit_sha":new_commit["sha"],
+                        "paths":[x["path"] for x in pending],
+                        "readback_verified":True,
+                        "readback_protocol":"unpublished_commit_tree_and_blob_exact_byte_readback_then_main_ref_update",
+                        "readback":receipts}
             last=f"PATCH ref -> HTTP {r.status_code}: {r.text[:800]}"
         except Exception as e:
             last=f"{type(e).__name__}: {e}"
@@ -94,7 +137,7 @@ def atomic_commit(repo,files,message,h):
 
 def main():
     ap=argparse.ArgumentParser()
-    ap.add_argument("--kind",required=True,choices=("models","svg"))
+    ap.add_argument("--kind",required=True,choices=("models","svg","skm"))
     ap.add_argument("--file")
     ap.add_argument("--integrity-json",required=True)
     ap.add_argument("--integrity-md",required=True)
@@ -109,7 +152,7 @@ def main():
 
     latest_path=f"data/inbox/public_collector/integrity/{args.kind}/latest.json"
     previous=decoded_json_content(content_meta(repo,latest_path,h))
-    nominal_minutes=60 if args.kind=="svg" else 180
+    nominal_minutes=180 if args.kind=="models" else 60
     continuity={
         "nominal_target_interval_minutes":nominal_minutes,
         "previous_attempt_generated_at_utc":None,
@@ -127,6 +170,12 @@ def main():
             estimated_whole_nominal_intervals_without_attempt=max(0,int(gap//nominal_minutes)-1),
         )
     report["invocation_continuity"]=continuity
+    report["private_transfer_protocol"]={
+        "method_version":"private-transfer-readback-v1",
+        "publish_gate":"unpublished commit tree + blob exact-byte readback before main ref update",
+        "gzip_payload_check":"compressed bytes exact; decompressed SHA-256 must equal source_sha256",
+        "main_ref_check":"main must resolve to the verified commit immediately after update"
+    }
 
     md_text=Path(args.integrity_md).read_text(encoding="utf-8")
     md_text += (
@@ -146,7 +195,8 @@ def main():
         report["private_payload"]={
             "destination":dest,"source_sha256":hashlib.sha256(raw).hexdigest(),
             "source_bytes":len(raw),"compressed_bytes":len(packed)}
-        files.append({"path":dest,"content":packed,"immutable":True,"gzip":True})
+        files.append({"path":dest,"content":packed,"immutable":True,"gzip":True,
+                      "source_sha256":report["private_payload"]["source_sha256"]})
 
     report_raw=(json.dumps(report,indent=2,ensure_ascii=False,allow_nan=False)+"\n").encode()
     files += [
