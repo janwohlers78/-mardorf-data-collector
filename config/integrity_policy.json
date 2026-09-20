@@ -258,7 +258,7 @@
     "provider_policy_notes": {
       "ECMWF-IFS": {
         "policy_version": "ifs-cycle50r1-open-data-2026",
-        "reference_url": "https://www.ecmwf.int/en/forecasts/datasets/open-data",
+        "reference_url": "https://confluence.ecmwf.int/pages/viewpage.action?pageId=663003972",
         "runs_utc": [
           0,
           6,
@@ -268,7 +268,9 @@
         "project_required_horizon_hours": 120,
         "documented_06_18_open_data_horizon_hours": 90,
         "currentness_limit_hours": 14,
-        "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule. Around cycle transitions the preceding public run can legitimately exceed 12 h age; a 14 h limit covers the documented dissemination window with a small margin while retaining a strict freshness gate."
+        "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule. Around cycle transitions the preceding public run can legitimately exceed 12 h age; a 14 h limit covers the documented dissemination window with a small margin while retaining a strict freshness gate.",
+        "gust_parameter_semantics": "Open Data maximum 10 m gust is 10fg; GRIB/index data may expose the 3-hour product as 10fg3 (paramId 228028) for steps 3-144, so the collector requests and accepts both aliases.",
+        "horizon_source_note": "The technical Open Data file-layout documentation currently lists deterministic 06/18 UTC oper/fc through 90 h; the overview catalogue page lists 144 h. The collector conservatively gates 06/18 UTC at 90 h until the technical documentation/provider files converge."
       }
     }
   },
