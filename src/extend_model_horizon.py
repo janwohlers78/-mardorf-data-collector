@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlencode,urljoin
 import requests
 from ecmwf.opendata import Client
-from grib_identity import assert_grib_run_time
+from grib_identity import assert_grib_run_time,grib_run_times
 
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
@@ -56,13 +56,12 @@ def leads_for_cycle(model,base):
     return [lead for lead in TARGET_LEADS if lead<=limit]
 
 def grib_run_time(path):
-    q=subprocess.run(['grib_get','-w','shortName=10u','-p','dataDate,dataTime',str(path)],capture_output=True,text=True,check=True)
-    for line in q.stdout.splitlines():
-        parts=line.strip().split()
-        if len(parts)>=2 and parts[0].isdigit() and parts[1].isdigit():
-            return datetime.strptime(parts[0]+parts[1].zfill(4),'%Y%m%d%H%M').replace(tzinfo=timezone.utc)
-    raise RuntimeError(f'cannot parse ECMWF GRIB run time: {q.stdout[:300]!r}')
-
+    observed=grib_run_times(path)
+    if len(observed)!=1:
+        raise RuntimeError(
+            f'ECMWF GRIB batch contains multiple model reference times: '
+            f'{[x.isoformat() for x in observed]}')
+    return observed[0]
 
 def gfs_url(base,lead,gefs=False):
     cyc=base.strftime('%Y%m%d%H');ymd,hh=cyc[:8],cyc[8:]
