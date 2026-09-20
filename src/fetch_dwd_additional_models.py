@@ -5,6 +5,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urljoin
 import requests
+from grib_identity import assert_grib_run_time
 
 LAT=52.4942; LON=9.3418
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
@@ -93,6 +94,7 @@ def fetch_icon_eu(leads,required_cycle_lead=None):
                 try:
                     u=find_dwd_file(model,cycle,lead,param); urls.append(u)
                     r=S.get(u,timeout=90); r.raise_for_status(); p=Path(td)/f'eu_{param}_{lead}.grib2'; p.write_bytes(bz2.decompress(r.content))
+                    assert_grib_run_time(p,base,f'ICON-EU {param} lead {lead}')
                     vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
                 except Exception as e: vals[param]={'error':f'{type(e).__name__}: {e}'}
             one=lambda p: vals[p][0]['value'] if isinstance(vals.get(p),list) and vals[p] else None
