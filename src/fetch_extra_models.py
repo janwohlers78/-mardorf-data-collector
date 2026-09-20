@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import requests
 from ecmwf.opendata import Client
+from grib_identity import assert_grib_run_time
 LAT=52.4942; LON=9.3418
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
@@ -88,7 +89,7 @@ def fetch_gefs(leads):
   for lead in leads:
    url=gefs_url(cyc,lead); r=S.get(url,timeout=90); r.raise_for_status()
    if r.content[:4]!=b'GRIB': raise RuntimeError(f'GEFS non-GRIB lead {lead}')
-   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); rows=nearest(p); vals={}
+   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); assert_grib_run_time(p,base,f'GEFS-control lead {lead}'); rows=nearest(p); vals={}
    for n,s,v in rows: vals.setdefault(n,[]).append({'stepRange':s,'value':v})
    def one(*ns):
     for n in ns:
