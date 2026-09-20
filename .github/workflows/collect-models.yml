@@ -3,7 +3,7 @@ name: Collect model source data
 
 on:
   push:
-    branches: [main]
+    branches: [main, provider-edge-hardening-20260920]
     paths:
       - 'src/**'
       - 'config/integrity_policy.json'
