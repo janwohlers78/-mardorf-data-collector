@@ -10,6 +10,13 @@ def _grib_datetime(date_value,time_value,label,path):
         raise RuntimeError(f"unparseable GRIB {label} in {path}: date={ds!r} time={ts!r}")
     return datetime.strptime(ds+ts.zfill(4),"%Y%m%d%H%M").replace(tzinfo=timezone.utc)
 
+def _step_end_hours(step_range):
+    tokens=re.findall(r"(-?\d+(?:\.\d+)?)([smhd]?)",str(step_range).lower())
+    if not tokens:return None
+    value=float(tokens[-1][0]);unit=tokens[-1][1]
+    factors={"":1.0,"h":1.0,"m":1.0/60.0,"s":1.0/3600.0,"d":24.0}
+    return value*factors[unit]
+
 def grib_message_identities(path):
     p=subprocess.run(
         ["grib_get","-p","shortName,dataDate,dataTime,stepRange,validityDate,validityTime",str(path)],
@@ -24,8 +31,7 @@ def grib_message_identities(path):
         short_name,data_date,data_time,step_range,validity_date,validity_time=parts[:6]
         run=_grib_datetime(data_date,data_time,"reference time",path)
         valid=_grib_datetime(validity_date,validity_time,"validity time",path)
-        nums=re.findall(r"\d+",str(step_range))
-        step_end=int(nums[-1]) if nums else None
+        step_end=_step_end_hours(step_range)
         rows.append({
             "short_name":short_name,
             "run_time_utc":run,
@@ -65,7 +71,7 @@ def assert_grib_valid_time(path,expected_run,expected_valid,context):
         if row["valid_time_utc"]!=expected_valid:
             failures.append({"short_name":row["short_name"],"reason":"valid_time_mismatch",
                              "observed":row["valid_time_utc"].isoformat()})
-        if row["step_end_hours"]!=expected_lead:
+        if row["step_end_hours"] is None or abs(row["step_end_hours"]-expected_lead)>1e-9:
             failures.append({"short_name":row["short_name"],"reason":"step_end_mismatch",
                              "step_range":row["step_range"],"step_end_hours":row["step_end_hours"]})
     if failures:
@@ -90,7 +96,7 @@ def assert_grib_batch_leads(path,expected_run,expected_leads,context):
                              "valid_time_utc":row["valid_time_utc"].isoformat(),"lead_hours":lead})
             continue
         lead=int(round(lead));observed.add(lead)
-        if row["step_end_hours"]!=lead:
+        if row["step_end_hours"] is None or abs(row["step_end_hours"]-lead)>1e-9:
             failures.append({"short_name":row["short_name"],"reason":"step_validity_disagreement",
                              "step_range":row["step_range"],"step_end_hours":row["step_end_hours"],
                              "validity_lead_hours":lead})
