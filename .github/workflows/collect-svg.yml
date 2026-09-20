@@ -24,10 +24,13 @@ concurrency:
 
 jobs:
   collect:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Check whether scheduled SVG collection is due
         id: due
