@@ -22,9 +22,14 @@ EPS_EXPECTED_MEMBERS=20
 EPS_SETTLING_SECONDS=600
 
 
+class NearestRows(list):
+    pass
+
 def nearest(path):
     p=subprocess.run(['grib_ls','-l',f'{LAT},{LON},1','-p','shortName,stepRange',str(path)],capture_output=True,text=True,check=True)
-    rows=[]
+    m=re.search(r'Grid Point chosen .*?latitude=([+-]?\d+(?:\.\d+)?) longitude=([+-]?\d+(?:\.\d+)?)',p.stdout)
+    if not m: raise RuntimeError(f'Cannot identify ecCodes selected grid point for {path}: {p.stdout[:700]}')
+    rows=NearestRows();rows.point={'latitude':float(m.group(1)),'longitude':float(m.group(2)),'selection':'ecCodes_nearest_grid_point'}
     for line in p.stdout.splitlines():
         x=line.strip().split()
         if len(x)>=3:
@@ -101,16 +106,17 @@ def fetch_icon_eu(leads,required_cycle_lead=None):
     params=['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']
     with tempfile.TemporaryDirectory() as td:
         for lead in leads:
-            vals={}; urls=[]
+            vals={}; urls=[]; point=None
             for param in params:
                 try:
                     u=find_dwd_file(model,cycle,lead,param); urls.append(u)
                     r=S.get(u,timeout=90); r.raise_for_status(); p=Path(td)/f'eu_{param}_{lead}.grib2'; p.write_bytes(bz2.decompress(r.content))
                     assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU {param} lead {lead}')
-                    vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
+                    rows=nearest(p); point=point or rows.point
+                    vals[param]=[{'stepRange':s,'value':v} for _,s,v in rows]
                 except Exception as e: vals[param]={'error':f'{type(e).__name__}: {e}'}
             one=lambda p: vals[p][0]['value'] if isinstance(vals.get(p),list) and vals[p] else None
-            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'cycle_selection':selection}
+            rec={'model':'ICON-EU','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'DWD Open Data raw GRIB2','source_urls':urls,'values':vals,'cycle_selection':selection,'forecast_coordinate_or_grid_point':point}
             if one('u_10m') is not None and one('v_10m') is not None: rec['derived']=derived(one('u_10m'),one('v_10m'),one('vmax_10m'))
             out.append(rec)
     return out
@@ -343,7 +349,9 @@ def fetch_icon_d2_eps_bundle(leads):
         rec={'model':'ICON-D2-EPS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,
              'valid_time_utc':valid.isoformat(),
              'source':'Open-Meteo Ensemble API named model dwd_icon_d2_eps; DWD cycle independently confirmed',
-             'source_url':r.url,'source_run_identity':identity,'members':members,'ensemble_statistics':stats}
+             'source_url':r.url,'source_run_identity':identity,
+             'forecast_coordinate_or_grid_point':hourly_source['returned_coordinate'],
+             'members':members,'ensemble_statistics':stats}
         if rec_error:
             rec['error_type']='EnsembleCompletenessError';rec['error_message']=rec_error
         elif len(members)==EPS_EXPECTED_MEMBERS:
