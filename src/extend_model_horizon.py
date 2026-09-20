@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlencode,urljoin
 import requests
 from ecmwf.opendata import Client
-from grib_identity import assert_grib_run_time,grib_run_times
+from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
@@ -78,7 +78,7 @@ def fetch_noaa(data,model,gefs=False):
         for lead in leads_for_cycle(model,base):
             url=gfs_url(base,lead,gefs);r=S.get(url,timeout=90);r.raise_for_status()
             if r.content[:4]!=b'GRIB':raise RuntimeError(f'{model} lead {lead}: non-GRIB response')
-            p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);assert_grib_run_time(p,base,f'{model} extension lead {lead}');vals={}
+            p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'{model} extension lead {lead}');vals={}
             for n,s,v in nearest(p):vals.setdefault(n,[]).append({'stepRange':s,'value':v})
             def one(*ns):
                 for n in ns:
@@ -91,8 +91,9 @@ def fetch_noaa(data,model,gefs=False):
 
 
 def step_end(step_range):
-    nums=re.findall(r'\d+',str(step_range))
-    return int(nums[-1]) if nums else None
+    value=_step_end_hours(step_range)
+    if value is None or abs(value-round(value))>1e-9:return None
+    return int(round(value))
 
 def fetch_ifs(data):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
@@ -104,6 +105,7 @@ def fetch_ifs(data):
             date=base.strftime('%Y%m%d'),time=base.hour,stream='oper',type='fc',
             step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(p))
         actual=grib_run_time(p)
+        assert_grib_batch_leads(p,actual,leads,'ECMWF-IFS extension batch')
         if actual!=base:
             raise RuntimeError(f'ECMWF run identity mismatch: expected {base.isoformat()} got {actual.isoformat()}')
         bylead={int(x):{} for x in leads}
@@ -142,7 +144,7 @@ def fetch_icon_eu(data):
                 if not cand:vals[param]={'error':'file_not_published'};continue
                 url=sorted(cand)[0];urls.append(url)
                 try:
-                    r=S.get(url,timeout=90);r.raise_for_status();p=Path(td)/f'eu_{param}_{lead}.grib2';p.write_bytes(bz2.decompress(r.content));assert_grib_run_time(p,base,f'ICON-EU extension {param} lead {lead}');vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
+                    r=S.get(url,timeout=90);r.raise_for_status();p=Path(td)/f'eu_{param}_{lead}.grib2';p.write_bytes(bz2.decompress(r.content));assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU extension {param} lead {lead}');vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
                 except Exception as e:vals[param]={'error':f'{type(e).__name__}: {e}'}
             def one(name):
                 x=vals.get(name);return x[0]['value'] if isinstance(x,list) and x else None

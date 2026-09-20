@@ -75,7 +75,7 @@ def nonfuture_rows(payload,now):
             future.append({"time_utc":t.isoformat(),"value":row.get("y")})
             continue
         out.append({"time_utc":t.isoformat(),"value":row.get("y")})
-    return out,future
+    return sorted(out,key=lambda x:x["time_utc"]),sorted(future,key=lambda x:x["time_utc"])
 
 def main():
     now=datetime.now(timezone.utc)

@@ -5,7 +5,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urljoin
 import requests
-from grib_identity import assert_grib_run_time
+from grib_identity import assert_grib_valid_time
 
 LAT=52.4942; LON=9.3418
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
@@ -46,20 +46,25 @@ def directory_hrefs(model,hh,param):
 
 
 def discover_cycle(model,required_lead=0):
-    """Newest DWD cycle which really contains the requested farthest lead."""
-    per_cycle={}; diagnostics=[]
+    """Newest DWD cycle with all wind-critical fields at the requested lead."""
+    critical=('u_10m','v_10m','vmax_10m');coverage={};diagnostics=[]
     for hh in ['00','03','06','09','12','15','18','21']:
-        try:
-            _,hrefs=directory_hrefs(model,hh,'u_10m')
-            for href in hrefs:
-                m=re.search(r'_(20\d{8})_(\d{3})_',href)
-                if m: per_cycle.setdefault(m.group(1),set()).add(int(m.group(2)))
-        except Exception as e:
-            diagnostics.append((hh,type(e).__name__))
-    eligible=[cycle for cycle,ls in per_cycle.items() if required_lead in ls]
+        for param in critical:
+            try:
+                _,hrefs=directory_hrefs(model,hh,param)
+                for href in hrefs:
+                    m=re.search(r'_(20\d{8})_(\d{3})_',href)
+                    if m:
+                        coverage.setdefault(m.group(1),{}).setdefault(param,set()).add(int(m.group(2)))
+            except Exception as e:
+                diagnostics.append((hh,param,type(e).__name__))
+    eligible=[
+        cycle for cycle,fields in coverage.items()
+        if all(required_lead in fields.get(param,set()) for param in critical)
+    ]
     if not eligible:
-        summary=sorted((c,max(ls) if ls else -1) for c,ls in per_cycle.items())[-20:]
-        raise RuntimeError(f'No {model} cycle with lead {required_lead} discovered; cycles={summary}; errors={diagnostics}')
+        summary={cycle:{p:max(v) if v else -1 for p,v in fields.items()} for cycle,fields in sorted(coverage.items())[-20:]}
+        raise RuntimeError(f'No {model} cycle with all critical fields at lead {required_lead}; cycles={summary}; errors={diagnostics}')
     return max(eligible)
 
 
@@ -94,7 +99,7 @@ def fetch_icon_eu(leads,required_cycle_lead=None):
                 try:
                     u=find_dwd_file(model,cycle,lead,param); urls.append(u)
                     r=S.get(u,timeout=90); r.raise_for_status(); p=Path(td)/f'eu_{param}_{lead}.grib2'; p.write_bytes(bz2.decompress(r.content))
-                    assert_grib_run_time(p,base,f'ICON-EU {param} lead {lead}')
+                    assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'ICON-EU {param} lead {lead}')
                     vals[param]=[{'stepRange':s,'value':v} for _,s,v in nearest(p)]
                 except Exception as e: vals[param]={'error':f'{type(e).__name__}: {e}'}
             one=lambda p: vals[p][0]['value'] if isinstance(vals.get(p),list) and vals[p] else None

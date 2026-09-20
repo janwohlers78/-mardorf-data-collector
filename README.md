@@ -50,7 +50,8 @@ permissions.
 - Generated files live only in the ephemeral runner `work/` directory.
 - Transfer bundles are gzip-compressed and written directly to the private
   repository below `data/inbox/public_collector/`.
-- Every publication uses `private-transfer-readback-v1`: the unpublished private commit tree and blobs are read back byte-for-byte before `main` is moved. Gzip payloads are decompressed and checked against the original SHA-256. A separate private transfer receipt records the successful readback.
+- Every publication uses `private-transfer-readback-v2`: the unpublished private commit tree and blobs are read back byte-for-byte before `main` is moved. Gzip payloads are decompressed and checked against the SHA-256 recorded by the audit before transfer. Mutable latest pointers are monotonic by source generation time, and `latest_success` is published only in the verified receipt-bearing commit.
+- Runtime Python wheels are version- and SHA-256-pinned in `requirements-runtime.txt`; GitHub-maintained actions are pinned to full commit SHAs.
 - Scheduled workflows run from the default branch.
 - Pull requests from forks do not receive repository secrets.
 - The private repository remains the authoritative persistent store and performs
@@ -66,12 +67,15 @@ using any transferred bundle.
 
 ## Integrity reporting
 
-Every acquisition is followed by `collector-integrity-v1`.
+Every acquisition is followed by `collector-integrity-v1.4`.
 
 For models the report identifies, per source, the selected run, exact run age,
 age limit, expected/received lead hours, exact absent or duplicate leads,
 required-field failures, timestamp inconsistencies and provider/decode exceptions.
 Provider-cycle horizon limitations are distinguished from real download failures.
+GRIB-backed sources additionally verify provider `dataDate/dataTime`, `stepRange` and
+`validityDate/validityTime` before a record is accepted. The audit hard-fails on
+model-record identity or collection-spot mismatches.
 
 For SVG the report records each WeatherLink endpoint separately with HTTP status,
 request duration, response size and exception details, plus current observation

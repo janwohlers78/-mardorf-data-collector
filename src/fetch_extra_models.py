@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import requests
 from ecmwf.opendata import Client
-from grib_identity import assert_grib_run_time,grib_run_times
+from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 LAT=52.4942; LON=9.3418
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
@@ -36,9 +36,9 @@ def grib_run_time(path):
     return observed[0]
 
 def step_end(step_range):
- import re
- nums=re.findall(r'\d+',str(step_range))
- return int(nums[-1]) if nums else None
+ value=_step_end_hours(step_range)
+ if value is None or abs(value-round(value))>1e-9:return None
+ return int(round(value))
 
 def fetch_ifs(leads):
  out=[]
@@ -46,7 +46,7 @@ def fetch_ifs(leads):
   target=Path(td)/'ifs_batch.grib2'
   client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
   result=client.retrieve(stream='oper',type='fc',step=leads,param=['10u','10v','10fg','tp','mucape'],target=str(target))
-  run=grib_run_time(target); bylead={int(x):{} for x in leads}
+  run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}
   for n,s,v in nearest(target):
    lead=step_end(s)
    if lead not in bylead: continue
@@ -89,7 +89,7 @@ def fetch_gefs(leads):
   for lead in leads:
    url=gefs_url(cyc,lead); r=S.get(url,timeout=90); r.raise_for_status()
    if r.content[:4]!=b'GRIB': raise RuntimeError(f'GEFS non-GRIB lead {lead}')
-   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); assert_grib_run_time(p,base,f'GEFS-control lead {lead}'); rows=nearest(p); vals={}
+   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GEFS-control lead {lead}'); rows=nearest(p); vals={}
    for n,s,v in rows: vals.setdefault(n,[]).append({'stepRange':s,'value':v})
    def one(*ns):
     for n in ns:
