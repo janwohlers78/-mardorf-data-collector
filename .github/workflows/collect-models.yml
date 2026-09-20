@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 65
     env:
       COLLECTOR_MODEL_FILE: work/model_snapshot.json
+      FULL_VALIDATION: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[full-model-validation]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install ecCodes
@@ -47,7 +48,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           set +e
           timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-D2 --stage base "${args[@]}"
           rc=$?
@@ -62,7 +63,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           set +e
           timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model GFS --stage base "${args[@]}"
           rc=$?
@@ -77,7 +78,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           set +e
           timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model GEFS-control --stage base "${args[@]}"
           rc=$?
@@ -92,7 +93,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           set +e
           timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-EU --stage base "${args[@]}"
           rc=$?
@@ -107,7 +108,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           set +e
           timeout --signal=TERM --kill-after=15s 5m python src/provider_fetch.py --model ICON-D2-EPS --stage base "${args[@]}"
           rc=$?
@@ -122,7 +123,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
+          if { [ "${{ github.event_name }}" = "push" ] && [ "$FULL_VALIDATION" != "true" ]; } || [ "${{ inputs.test_mode }}" = "true" ]; then args+=(--test); fi
           last=1
           for source in azure google ecmwf; do
             echo "ECMWF base attempt via $source"
@@ -139,7 +140,7 @@ jobs:
           exit "$last"
 
       - name: Extend GFS to cycle horizon
-        if: github.event_name != 'push' && inputs.test_mode != true
+        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -153,7 +154,7 @@ jobs:
           exit "$rc"
 
       - name: Extend GEFS-control to cycle horizon
-        if: github.event_name != 'push' && inputs.test_mode != true
+        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -167,7 +168,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ICON-EU to cycle horizon
-        if: github.event_name != 'push' && inputs.test_mode != true
+        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -181,7 +182,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ECMWF-IFS to cycle horizon with mirror fallback
-        if: github.event_name != 'push' && inputs.test_mode != true
+        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -210,7 +211,7 @@ jobs:
         run: cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Transfer payload and integrity history to private repository
-        if: always() && github.event_name != 'push' && inputs.test_mode != true
+        if: always() && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         shell: bash
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
