@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 import requests
-from grib_identity import assert_grib_run_time
+from grib_identity import assert_grib_valid_time
 
 LAT=52.4942
 LON=9.3418
@@ -90,7 +90,7 @@ def fetch_icon(leads):
                 try:
                     grib=td/f'{param}_{lead}.grib2'
                     grib.write_bytes(bz2.decompress(get(url,90).content))
-                    assert_grib_run_time(grib,base,f'ICON-D2 {param} lead {lead}')
+                    assert_grib_valid_time(grib,base,base+timedelta(hours=lead),f'ICON-D2 {param} lead {lead}')
                     rows=grib_nearest(grib)
                     rec['values'][param]=rows[0]
                     if len(rows)>1:
@@ -140,7 +140,7 @@ def fetch_gfs(leads):
                 p=td/f'gfs_{lead}.grib2'; raw=get(url,90).content
                 if raw[:4] != b'GRIB': raise RuntimeError(f'NOMADS response is not GRIB, bytes={len(raw)}, head={raw[:100]!r}')
                 p.write_bytes(raw)
-                assert_grib_run_time(p,base,f'GFS lead {lead}')
+                assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GFS lead {lead}')
                 for row in grib_nearest(p):
                     rec['values'].setdefault(row['shortName'],[]).append(row)
             except Exception as e:
