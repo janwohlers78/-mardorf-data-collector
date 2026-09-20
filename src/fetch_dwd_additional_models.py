@@ -5,10 +5,17 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urljoin
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from grib_identity import assert_grib_valid_time
 
 LAT=52.4942; LON=9.3418
 S=requests.Session(); S.headers.update({'User-Agent':'mardorf-data-collector/1.0 (+github-actions)'})
+_retry=Retry(total=3,connect=3,read=3,status=3,backoff_factor=1.0,
+             status_forcelist=(408,429,500,502,503,504),
+             allowed_methods=frozenset(['GET']),raise_on_status=False,
+             respect_retry_after_header=True)
+S.mount('https://',HTTPAdapter(max_retries=_retry,pool_connections=4,pool_maxsize=4))
 OPEN_METEO_D2_EPS_META='https://api.open-meteo.com/data/dwd_icon_d2_eps/static/meta.json'
 OPEN_METEO_D2_EPS_API='https://ensemble-api.open-meteo.com/v1/ensemble'
 EPS_EXPECTED_MEMBERS=20
