@@ -8,7 +8,7 @@ on:
       - 'config/integrity_policy.json'
       - '.github/workflows/collect-models.yml'
   schedule:
-    - cron: '35 0,3,6,9,12,15,18,21 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       test_mode:
@@ -32,18 +32,43 @@ jobs:
       FULL_VALIDATION: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[full-model-validation]') }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check whether scheduled model collection is due
+        id: due
+        if: github.event_name == 'schedule'
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        run: python3 src/check_collection_due.py --kind models --max-age-minutes 150
+
+      - name: Report skipped model schedule check
+        if: github.event_name == 'schedule' && steps.due.outputs.due != 'true'
+        run: |
+          {
+            echo "## Model collector schedule check"
+            echo
+            echo "- Provider fetch skipped: latest successful private transfer is still within the target interval."
+            echo "- Previous success: ${{ steps.due.outputs.last_success_generated_at_utc }}"
+            echo "- Age: ${{ steps.due.outputs.age_minutes }} min"
+            echo "- Threshold: ${{ steps.due.outputs.threshold_minutes }} min"
+            echo "- Reason: ${{ steps.due.outputs.reason }}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Install ecCodes
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libeccodes-tools
           grib_ls -V
       - uses: actions/setup-python@v5
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         with:
           python-version: '3.12'
       - name: Install Python dependencies
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         run: python -m pip install --disable-pip-version-check requests ecmwf-opendata
 
       - name: Fetch ICON-D2 base horizon
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -59,6 +84,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch GFS base horizon
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -74,6 +100,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch GEFS-control base horizon
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -89,6 +116,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ICON-EU base horizon
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -104,6 +132,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ICON-D2-EPS base horizon
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -119,6 +148,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ECMWF-IFS base horizon with mirror fallback
+        if: github.event_name != 'schedule' || steps.due.outputs.due == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -140,7 +170,7 @@ jobs:
           exit "$last"
 
       - name: Extend GFS to cycle horizon
-        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        if: (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -154,7 +184,7 @@ jobs:
           exit "$rc"
 
       - name: Extend GEFS-control to cycle horizon
-        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        if: (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -168,7 +198,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ICON-EU to cycle horizon
-        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        if: (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -182,7 +212,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ECMWF-IFS to cycle horizon with mirror fallback
-        if: (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        if: (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         continue-on-error: true
         shell: bash
         run: |
@@ -202,16 +232,16 @@ jobs:
           exit "$last"
 
       - name: Audit every model source, lead, timestamp and required field
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: |
           python src/audit_integrity.py             --kind models             --input work/model_snapshot.json             --json-out work/model_integrity.json             --md-out work/model_integrity.md
 
       - name: Publish detailed integrity report in Actions summary
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Transfer payload and integrity history to private repository
-        if: always() && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
         shell: bash
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -226,7 +256,7 @@ jobs:
           python src/push_private.py "${args[@]}"
 
       - name: Fail workflow when granular integrity audit found errors
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.due.outputs.due == 'true')
         run: |
           python - <<'PY'
           import json
