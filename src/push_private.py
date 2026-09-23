@@ -37,8 +37,9 @@ def req(method,url,h,**kwargs):
         raise RuntimeError(f"{method} {url} -> HTTP {r.status_code}: {r.text[:800]}")
     return r.json() if r.content else {}
 
-def content_meta(repo,path,h):
-    r=requests.get(f"{API}/repos/{repo}/contents/{path}",headers=h,timeout=30)
+def content_meta(repo,path,h,ref=None):
+    params={"ref":ref} if ref else None
+    r=requests.get(f"{API}/repos/{repo}/contents/{path}",headers=h,timeout=30,params=params)
     if r.status_code==404:return None
     if not r.ok:raise RuntimeError(f"GET content {path} -> HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
@@ -54,9 +55,9 @@ def decoded_json_content(meta):
     try:return json.loads(raw.decode("utf-8"))
     except Exception:return None
 
-def same_existing(repo,path,content,h,gz=False):
+def same_existing(repo,path,content,h,gz=False,ref=None):
     """Return the existing blob SHA only when immutable bytes match exactly."""
-    meta=content_meta(repo,path,h)
+    meta=content_meta(repo,path,h,ref=ref)
     if not meta:return False
     sha=meta.get("sha")
     if not sha:
@@ -88,20 +89,47 @@ def blob(repo,content,h):
 def timestamp_not_older(current_value,incoming_value):
     return parse_time(incoming_value)>=parse_time(current_value)
 
-def monotonic_allows(repo,item,h):
+def monotonic_allows(repo,item,h,ref=None):
     guard=item.get("monotonic_guard")
     if not isinstance(guard,dict):return True
-    current=decoded_json_content(content_meta(repo,guard["path"],h))
+    current=decoded_json_content(content_meta(repo,guard["path"],h,ref=ref))
     if not current:return True
     current_value=current.get(guard["field"])
     if not current_value:return True
     return timestamp_not_older(current_value,guard["incoming_time"])
 
-def mutable_already_exact(repo,item,h):
+def mutable_already_exact(repo,item,h,ref=None):
     if item.get("immutable"):return False
-    meta=content_meta(repo,item["path"],h)
+    meta=content_meta(repo,item["path"],h,ref=ref)
     raw=decoded_bytes(meta)
     return raw==item["content"] if raw is not None else False
+
+def descendant_preserves(repo,new_commit_sha,current_sha,pending,h):
+    """Accept a later main descendant only if it preserves this publication."""
+    if current_sha==new_commit_sha:
+        return True
+    comparison=req("GET",f"{API}/repos/{repo}/compare/{new_commit_sha}...{current_sha}",h)
+    if comparison.get("status") not in ("ahead","identical"):
+        return False
+    for item in pending:
+        if item.get("immutable"):
+            if not same_existing(
+                repo,item["path"],item["content"],h,item.get("gzip",False),ref=current_sha
+            ):
+                return False
+            continue
+        guard=item.get("monotonic_guard")
+        if isinstance(guard,dict):
+            current=decoded_json_content(content_meta(repo,guard["path"],h,ref=current_sha))
+            if not current:
+                return False
+            current_value=current.get(guard["field"])
+            if not current_value or parse_time(current_value)<parse_time(guard["incoming_time"]):
+                return False
+            continue
+        if not mutable_already_exact(repo,item,h,ref=current_sha):
+            return False
+    return True
 
 def verify_unpublished_commit(repo,commit_sha,pending,blob_shas,h):
     commit=req("GET",f"{API}/repos/{repo}/git/commits/{commit_sha}",h)
@@ -145,40 +173,45 @@ def ref_retry_delay(attempt):
     return REF_UPDATE_BACKOFF_SECONDS[min(attempt,len(REF_UPDATE_BACKOFF_SECONDS)-1)]
 
 def atomic_commit(repo,files,message,h):
-    """Commit with exact-byte readback and race-safe monotonic mutable pointers.
+    """Commit with exact-byte readback and parent-bound monotonic checks.
 
-    Every failed compare-and-swap style main-ref update re-reads current main,
-    re-checks monotonic guards and rebuilds the tree from that new parent.
+    Each retry reads main first. All monotonic guards, immutable collision checks,
+    idempotence checks and the base tree are then resolved against that exact
+    parent SHA. A failed non-force ref update restarts the complete check/build
+    sequence from the newly observed parent.
     """
     all_items=list(files)
-    blob_shas={}
-    for item in all_items:
-        existing_sha=None
-        if item.get("immutable"):
-            existing_sha=same_existing(repo,item["path"],item["content"],h,item.get("gzip",False))
-        blob_shas[item["path"]]=existing_sha or blob(repo,item["content"],h)
+    # Blob creation is content-addressed and independent of the eventual parent.
+    blob_shas={item["path"]:blob(repo,item["content"],h) for item in all_items}
 
     last=None
     for attempt in range(REF_UPDATE_MAX_ATTEMPTS):
         try:
-            # Re-evaluate pointer ordering on every retry, after any competing
-            # writer may have advanced main.
+            ref=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
+            parent=ref["object"]["sha"]
+
             pending=[]
             skipped_stale=[]
             skipped_exact=[]
             for item in all_items:
-                if not monotonic_allows(repo,item,h):
+                if item.get("immutable"):
+                    existing=same_existing(
+                        repo,item["path"],item["content"],h,item.get("gzip",False),ref=parent
+                    )
+                    if existing:
+                        skipped_exact.append(item["path"])
+                        continue
+                if not monotonic_allows(repo,item,h,ref=parent):
                     skipped_stale.append(item["path"]);continue
-                if mutable_already_exact(repo,item,h):
+                if mutable_already_exact(repo,item,h,ref=parent):
                     skipped_exact.append(item["path"]);continue
                 pending.append(item)
             if not pending:
                 return {"idempotent":True,"commit_sha":None,"paths":[],
+                        "parent_sha":parent,
                         "skipped_stale_paths":skipped_stale,"skipped_exact_paths":skipped_exact,
                         "readback_verified":True,"readback":[]}
 
-            ref=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
-            parent=ref["object"]["sha"]
             commit=req("GET",f"{API}/repos/{repo}/git/commits/{parent}",h)
             tree_entries=[{"path":x["path"],"mode":"100644","type":"blob","sha":blob_shas[x["path"]]} for x in pending]
             tree=req("POST",f"{API}/repos/{repo}/git/trees",h,json={
@@ -190,15 +223,19 @@ def atomic_commit(repo,files,message,h):
                              json={"sha":new_commit["sha"],"force":False})
             if r.ok:
                 published=req("GET",f"{API}/repos/{repo}/git/ref/heads/main",h)
-                if published.get("object",{}).get("sha")!=new_commit["sha"]:
+                current_sha=published.get("object",{}).get("sha")
+                if not current_sha or not descendant_preserves(
+                    repo,new_commit["sha"],current_sha,pending,h
+                ):
                     raise RuntimeError(
-                        f"published main ref mismatch: expected {new_commit['sha']} "
-                        f"got {published.get('object',{}).get('sha')}")
+                        f"published commit is not preserved by current main: "
+                        f"published={new_commit['sha']} current={current_sha}")
                 return {"idempotent":False,"commit_sha":new_commit["sha"],
+                        "parent_sha":parent,"validated_main_sha":current_sha,
                         "paths":[x["path"] for x in pending],
                         "skipped_stale_paths":skipped_stale,"skipped_exact_paths":skipped_exact,
                         "readback_verified":True,
-                        "readback_protocol":"unpublished_commit_tree_and_blob_exact_byte_readback_then_main_ref_update",
+                        "readback_protocol":"parent-bound guards + unpublished exact-byte readback + non-force main update + descendant preservation check",
                         "readback":receipts}
             last=f"PATCH ref -> HTTP {r.status_code}: {r.text[:800]}"
         except Exception as e:
@@ -265,8 +302,8 @@ def main():
         "gzip_payload_check":"compressed bytes exact; decompressed SHA-256 must equal audit input SHA-256",
         "latest_pointer_rule":"generated_at_utc is monotonic across concurrent/retried writers",
         "success_pointer_rule":"latest_success is published only with a verified transfer receipt",
-        "main_ref_check":"main must resolve to the verified commit immediately after update",
-        "main_ref_race_policy":"up to 8 CAS-style retries; each retry re-reads main and rebuilds the tree",
+        "main_ref_check":"main must equal the verified commit or be a later descendant that preserves immutable evidence and monotonic pointers",
+        "main_ref_race_policy":"up to 8 CAS-style retries; each retry reads the parent first, pins every guard/collision check to that SHA, and rebuilds the tree",
     }
 
     md_text=Path(args.integrity_md).read_text(encoding="utf-8")
