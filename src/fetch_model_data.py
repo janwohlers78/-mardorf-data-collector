@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Operational fetcher: official DWD ICON-D2 + NOAA/NCEP GFS point data for Mardorf.
-import argparse, bz2, json, math, re, subprocess, sys, tempfile, os
+import argparse, bz2, json, math, re, subprocess, sys, tempfile, os, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -17,6 +17,24 @@ def get(url, timeout=60):
     r=S.get(url, timeout=timeout)
     r.raise_for_status()
     return r
+
+
+def get_grib(url, timeout=60, attempts=3):
+    last=None
+    for attempt in range(attempts):
+        try:
+            r=S.get(url, timeout=timeout)
+            r.raise_for_status()
+            raw=r.content
+            if raw[:4] != b'GRIB':
+                raise RuntimeError(
+                    f'NOMADS response is not GRIB, bytes={len(raw)}, head={raw[:100]!r}')
+            return raw
+        except Exception as e:
+            last=e
+            if attempt+1 < attempts:
+                time.sleep(2*(attempt+1))
+    raise last
 
 
 def latest_dwd_icon_d2_cycle(required_lead=0):
@@ -123,12 +141,11 @@ def discover_gfs_cycle(required_lead=0):
             # are never selected for a 48 h production run.
             url=gfs_url(cycle,required_lead,probe=True)
             try:
-                r=S.get(url,timeout=30)
-                attempts.append((cycle,required_lead,r.status_code,len(r.content),r.content[:4]))
-                if r.status_code==200 and r.content[:4]==b'GRIB':
-                    return cycle
+                raw=get_grib(url,timeout=30,attempts=2)
+                attempts.append((cycle,required_lead,200,len(raw),raw[:4]))
+                return cycle
             except Exception as e:
-                attempts.append((cycle,required_lead,'EXC',0,str(e)[:80]))
+                attempts.append((cycle,required_lead,'EXC',0,str(e)[:120]))
     raise RuntimeError(f'No GFS cycle with lead {required_lead} discovered; attempts={attempts}')
 
 
@@ -141,8 +158,7 @@ def fetch_gfs(leads):
             url=gfs_url(cycle,lead)
             rec={'model':'GFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS','source_urls':[url],'values':{}}
             try:
-                p=td/f'gfs_{lead}.grib2'; raw=get(url,90).content
-                if raw[:4] != b'GRIB': raise RuntimeError(f'NOMADS response is not GRIB, bytes={len(raw)}, head={raw[:100]!r}')
+                p=td/f'gfs_{lead}.grib2'; raw=get_grib(url,90,attempts=3)
                 p.write_bytes(raw)
                 assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GFS lead {lead}')
                 rows=grib_nearest(p)
