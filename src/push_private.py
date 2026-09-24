@@ -23,6 +23,19 @@ def parse_time(value):
         raise ValueError(f"timestamp must be timezone-aware: {value!r}")
     return x.astimezone(timezone.utc)
 
+def workflow_provenance():
+    """Return GitHub Actions invocation identity for persistent transfer audit."""
+    return {
+        "run_id":os.getenv("GITHUB_RUN_ID") or None,
+        "run_attempt":os.getenv("GITHUB_RUN_ATTEMPT") or None,
+        "workflow":os.getenv("GITHUB_WORKFLOW") or None,
+        "job":os.getenv("GITHUB_JOB") or None,
+        "event_name":os.getenv("GITHUB_EVENT_NAME") or None,
+        "ref":os.getenv("GITHUB_REF") or None,
+        "sha":os.getenv("GITHUB_SHA") or None,
+        "repository":os.getenv("GITHUB_REPOSITORY") or None,
+    }
+
 def hdr(token):
     return {
         "Authorization":f"Bearer {token}",
@@ -296,6 +309,8 @@ def main():
                 incoming_attempt_older_than_current_latest=raw_gap<0,
             )
     report["invocation_continuity"]=continuity
+    invocation=workflow_provenance()
+    report["public_workflow_invocation"]=invocation
     report["private_transfer_protocol"]={
         "method_version":"private-transfer-readback-v2",
         "publish_gate":"unpublished commit tree + blob exact-byte readback before main ref update",
@@ -315,6 +330,9 @@ def main():
         f"- Incoming attempt older than current latest: {continuity['incoming_attempt_older_than_current_latest']}.\n"
         f"- Interval >1.5× nominal: {continuity['interval_exceeds_1_5x_nominal']}.\n"
         f"- Estimated complete nominal slots without an attempt: {continuity['estimated_whole_nominal_intervals_without_attempt']}.\n"
+        f"- Public workflow run: {invocation['run_id']} attempt {invocation['run_attempt']}; "
+        f"workflow={invocation['workflow']}; job={invocation['job']}; "
+        f"event={invocation['event_name']}; sha={invocation['sha']}.\n"
     )
     md_raw=md_text.encode("utf-8")
     immutable_files=[]
@@ -416,6 +434,7 @@ def main():
             "stamp":stamp,
             "source_generated_at_utc":when.isoformat(),
             "verified_at_utc":verified_at.isoformat(),
+            "public_workflow_invocation":invocation,
             "verified_data_commit_sha":result["commit_sha"],
             "readback_verified":True,
             "readback_protocol":result.get("readback_protocol"),
