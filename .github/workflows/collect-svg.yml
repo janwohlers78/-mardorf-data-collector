@@ -14,7 +14,7 @@ on:
       - 'requirements-runtime.txt'
       - '.github/workflows/collect-svg.yml'
   schedule:
-    - cron: '13,33,53 * * * *'
+    - cron: '13 * * * *'
   workflow_dispatch:
     inputs:
       watchdog:

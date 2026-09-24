@@ -10,7 +10,7 @@ on:
       - 'requirements-runtime.txt'
       - '.github/workflows/collect-models.yml'
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 */3 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
