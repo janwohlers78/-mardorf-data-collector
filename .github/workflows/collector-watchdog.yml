@@ -1,0 +1,88 @@
+name: External collector watchdog
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: public-collector-external-watchdog
+  cancel-in-progress: true
+
+jobs:
+  route:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Check SVG freshness
+        id: svg
+        run: python3 src/check_collection_due.py --kind svg --max-age-minutes 40
+
+      - name: Check model freshness
+        id: models
+        run: python3 src/check_collection_due.py --kind models --max-age-minutes 150
+
+      - name: Check secondary freshness
+        id: secondary
+        run: python3 src/check_collection_due.py --kind secondary --max-age-minutes 240
+
+      - name: Dispatch only due idle collectors
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dispatch_if_due() {
+            local workflow="$1"
+            local due="$2"
+            local reason="$3"
+            local age="$4"
+            local threshold="$5"
+
+            if [ "$due" != "true" ]; then
+              echo "$workflow: fresh; skip (age=$age min threshold=$threshold min reason=$reason)"
+              return 0
+            fi
+
+            local busy
+            busy="$(gh run list --workflow "$workflow" --limit 20 --json status --jq '[.[] | select(.status=="queued" or .status=="in_progress" or .status=="waiting" or .status=="pending" or .status=="requested")] | length')"
+            if [ "$busy" != "0" ]; then
+              echo "$workflow: due but already queued/running; skip duplicate dispatch"
+              return 0
+            fi
+
+            echo "$workflow: due; dispatching watchdog=true (age=$age min threshold=$threshold min reason=$reason)"
+            gh workflow run "$workflow" --repo "$GH_REPO" --ref main -f watchdog=true
+          }
+
+          dispatch_if_due             collect-svg.yml             "${{ steps.svg.outputs.due }}"             "${{ steps.svg.outputs.reason }}"             "${{ steps.svg.outputs.age_minutes }}"             "${{ steps.svg.outputs.threshold_minutes }}"
+
+          dispatch_if_due             collect-models.yml             "${{ steps.models.outputs.due }}"             "${{ steps.models.outputs.reason }}"             "${{ steps.models.outputs.age_minutes }}"             "${{ steps.models.outputs.threshold_minutes }}"
+
+          dispatch_if_due             collect-secondary.yml             "${{ steps.secondary.outputs.due }}"             "${{ steps.secondary.outputs.reason }}"             "${{ steps.secondary.outputs.age_minutes }}"             "${{ steps.secondary.outputs.threshold_minutes }}"
+
+      - name: Publish watchdog decision summary
+        if: always()
+        run: |
+          {
+            echo "## External collector watchdog"
+            echo
+            echo "| Collector | Due | Age min | Threshold min | Reason |"
+            echo "|---|---:|---:|---:|---|"
+            echo "| SVG | ${{ steps.svg.outputs.due }} | ${{ steps.svg.outputs.age_minutes }} | ${{ steps.svg.outputs.threshold_minutes }} | ${{ steps.svg.outputs.reason }} |"
+            echo "| Models | ${{ steps.models.outputs.due }} | ${{ steps.models.outputs.age_minutes }} | ${{ steps.models.outputs.threshold_minutes }} | ${{ steps.models.outputs.reason }} |"
+            echo "| Secondary | ${{ steps.secondary.outputs.due }} | ${{ steps.secondary.outputs.age_minutes }} | ${{ steps.secondary.outputs.threshold_minutes }} | ${{ steps.secondary.outputs.reason }} |"
+            echo
+            echo "Only due collectors are dispatched, and an already queued/running collector is never duplicated."
+          } >> "$GITHUB_STEP_SUMMARY"

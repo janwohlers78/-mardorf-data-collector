@@ -13,8 +13,24 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertEqual(path,"data/inbox/public_collector/transfer_receipts/secondary/latest.json")
         self.assertEqual(field,"source_generated_at_utc")
 
-    def test_external_watchdog_is_removed_and_native_schedules_match_target_cadence(self):
-        self.assertFalse(Path(".github/workflows/collector-watchdog.yml").exists())
+    def test_external_watchdog_routes_only_due_idle_collectors(self):
+        s=self.text("collector-watchdog.yml")
+        self.assertIn("workflow_dispatch:",s)
+        self.assertIn("actions: write",s)
+        self.assertIn("--kind svg --max-age-minutes 40",s)
+        self.assertIn("--kind models --max-age-minutes 150",s)
+        self.assertIn("--kind secondary --max-age-minutes 240",s)
+        self.assertIn("gh run list --workflow",s)
+        self.assertIn("queued",s)
+        self.assertIn("in_progress",s)
+        for wf in ("collect-svg.yml","collect-models.yml","collect-secondary.yml"):
+            self.assertIn(wf,s)
+        self.assertIn("watchdog=true",s)
+        self.assertNotIn("provider_fetch.py",s)
+        self.assertNotIn("fetch_svg_weatherlink.py",s)
+        self.assertNotIn("fetch_etnw_metar.py",s)
+
+    def test_native_schedules_remain_independent_fallback(self):
         svg=self.text("collect-svg.yml")
         models=self.text("collect-models.yml")
         secondary=self.text("collect-secondary.yml")

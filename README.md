@@ -9,10 +9,10 @@ to the private repository.
 
 ## Schedules
 
-- Model due-check: hourly at minute 23 UTC. A full provider acquisition is started only when the last successful private model transfer is at least 150 minutes old; read failures are fail-open.
-- SVG/SKM due-check: at minutes 13, 33 and 53 UTC. A real WeatherLink/SKM acquisition is started only when the last successful SVG transfer is at least 40 minutes old; read failures are fail-open.
-- Wunstorf/ETNW secondary due-check: 00:47, 04:47, 10:47, 16:47 and 22:47 UTC. Acquisition runs only when the latest verified `secondary-batch-receipt-v1` is at least 240 minutes old; read failures are fail-open. Both child sources are independently audited and transferred, and only after both integrity gates pass is one batch receipt published.
-- External scheduler redundancy uses `.github/workflows/collector-watchdog.yml`. It dispatches the same three collector workflows with `watchdog=true`; each child workflow applies its normal freshness gate, so external triggering never creates a second acquisition path.
+- The external cron-job.org trigger is the primary heartbeat and calls `.github/workflows/collector-watchdog.yml` every 20 minutes. The watchdog first checks the verified private success timestamps itself and dispatches only collectors that are actually due. It also suppresses duplicate dispatch while the corresponding collector is queued or running.
+- Freshness thresholds remain SVG 40 minutes, models 150 minutes and the atomic secondary batch 240 minutes. Each dispatched child workflow repeats its own freshness check before provider access, so the router and collector are independently fail-safe.
+- GitHub-native schedules are retained as an independent fallback: models every 3 hours at minute 23 UTC, SVG hourly at minute 13 UTC, and Wunstorf/ETNW at 00:47, 04:47, 10:47, 16:47 and 22:47 UTC. They use the same freshness gates and therefore do not create a second acquisition path.
+- Wunstorf and ETNW remain independently audited and transferred; only after both integrity gates pass is one verified `secondary-batch-receipt-v1` published.
 - Code changes normally run a reduced model smoke test only; smoke tests never transfer data. Explicit `[full-model-validation]` / `[full-svg-validation]` validation commits exercise the full production transfer path.
 
 ## Sources
