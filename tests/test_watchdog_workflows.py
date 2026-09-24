@@ -13,16 +13,14 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertEqual(path,"data/inbox/public_collector/transfer_receipts/secondary/latest.json")
         self.assertEqual(field,"source_generated_at_utc")
 
-    def test_single_watchdog_dispatches_existing_collectors(self):
-        s=self.text("collector-watchdog.yml")
-        self.assertIn("workflow_dispatch:",s)
-        self.assertIn("actions: write",s)
-        for wf in ("collect-svg.yml","collect-models.yml","collect-secondary.yml"):
-            self.assertIn(wf,s)
-        self.assertIn("watchdog=true",s)
-        self.assertNotIn("provider_fetch.py",s)
-        self.assertNotIn("fetch_svg_weatherlink.py",s)
-        self.assertNotIn("fetch_etnw_metar.py",s)
+    def test_external_watchdog_is_removed_and_native_schedules_match_target_cadence(self):
+        self.assertFalse(Path(".github/workflows/collector-watchdog.yml").exists())
+        svg=self.text("collect-svg.yml")
+        models=self.text("collect-models.yml")
+        secondary=self.text("collect-secondary.yml")
+        self.assertIn("cron: '13 * * * *'",svg)
+        self.assertIn("cron: '23 */3 * * *'",models)
+        self.assertIn("cron: '47 0,4,10,16,22 * * *'",secondary)
 
     def test_failed_optional_skm_is_not_persisted_privately(self):
         s=self.text("collect-svg.yml")
