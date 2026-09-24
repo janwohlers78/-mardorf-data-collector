@@ -1,4 +1,4 @@
-# validation_generation: eps-readback-skm-audit-final-grib-header-20260920
+# validation_generation: eps-readback-skm-audit-final-grib-header-20260920-workflow-provenance-proof-20260924
 name: Collect model source data
 
 on:
