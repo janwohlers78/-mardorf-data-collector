@@ -104,6 +104,9 @@ def collect(payload,path,workers=4):
    try:
     rr=f.result();prior=list(sources[m]["records"]);sources[m]["records"].extend(rr)
     for h in l:sources[m]["lead_status"][str(h)]={"status":"published","checked_at_utc":now()}
+    candidate_core=[int(r["forecast_lead_hours"]) for r in payload.get("models",{}).get(m,[]) if r.get("derived") and r.get("forecast_lead_hours") is not None]
+    candidate_tail=[int(r["forecast_lead_hours"]) for r in sources[m]["records"] if r.get("derived")]
+    sources[m]["actual_max_lead"]=max(candidate_core+candidate_tail) if candidate_core or candidate_tail else None
     try:validate_archive(payload)
     except Exception:
      sources[m]["records"]=prior
