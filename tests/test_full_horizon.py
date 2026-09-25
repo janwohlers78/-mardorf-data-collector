@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import full_horizon_contract as c
 import collect_full_horizon as fetch
+import fetch_extra_models as extra
 
 def payload(hour=0):
     run = datetime(2026, 9, 25, hour, tzinfo=timezone.utc)
@@ -41,6 +42,37 @@ class HorizonTests(unittest.TestCase):
             for model, maximum in expected.items():
                 self.assertEqual(max(c.sampled_leads(model, run)), maximum)
                 self.assertEqual(len(c.sampled_leads(model, run)), len(set(c.sampled_leads(model, run))))
+
+    def test_gefs_cycle_specific_contract_and_maximum(self):
+        run00 = datetime(2026, 9, 25, 0, tzinfo=timezone.utc)
+        run06 = datetime(2026, 9, 25, 6, tzinfo=timezone.utc)
+        self.assertEqual(c.maximum_hours("GEFS-control", run00), 840)
+        self.assertEqual(c.maximum_hours("GEFS-control", run06), 384)
+        self.assertEqual(c.gefs_lead_contract(run00, 840)["wind_product"], "gefs_0p50a")
+        self.assertTrue(c.gefs_lead_contract(run00, 840)["expected"])
+        self.assertFalse(c.gefs_lead_contract(run06, 390)["expected"])
+
+    def test_gefs_discovery_full_validation_falls_back_to_cycle_with_published_cycle_max(self):
+        calls = []
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 25, 23, 0, tzinfo=timezone.utc)
+
+        class Response:
+            status_code = 200
+            def __init__(self, ok):
+                self.content = b"GRIB-test" if ok else b"not-grib"
+
+        def get(url, timeout=None):
+            calls.append(url)
+            return Response("f840" in url)
+
+        with patch.object(extra, "datetime", FixedDateTime), patch.object(extra.S, "get", side_effect=get):
+            selected = extra.discover_gefs(48, require_far_horizon=True)
+        self.assertEqual(selected, "2026092500")
+        self.assertTrue(all("f384" in u for u in calls[:3]))
+        self.assertIn("f840", calls[3])
 
     def test_gefs_product_boundary_and_gust_secondary_product(self):
         run = datetime(2026, 9, 25, tzinfo=timezone.utc)
@@ -90,8 +122,8 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(row["provider_product"], "gefs_0p50a")
         self.assertEqual(row["optional_product_errors"][0]["product"], "gefs_0p50b")
 
-    def collect(self, fail=False):
-        d = payload()
+    def collect(self, fail=False, hour=0):
+        d = payload(hour)
         original = copy.deepcopy(d)
         def noaa(model, run, lead):
             if fail and model == "GFS" and lead == 180:
@@ -109,6 +141,18 @@ class HorizonTests(unittest.TestCase):
         d, summary = self.collect()
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["sources"]["GEFS-control"]["received_extension_leads"][-1], 840)
+
+    def test_nonzero_gefs_cycle_persists_not_expected_far_leads_and_actual_max(self):
+        d, summary = self.collect(hour=6)
+        source = d["full_horizon_archive"]["sources"]["GEFS-control"]
+        gefs = summary["sources"]["GEFS-control"]
+        self.assertEqual(source["expected_max_lead_for_cycle"], 384)
+        self.assertEqual(source["actual_max_lead"], 384)
+        self.assertEqual(gefs["expected_max_lead_for_cycle"], 384)
+        self.assertEqual(gefs["actual_max_lead"], 384)
+        self.assertEqual(source["lead_status"]["390"]["status"], "not_expected_for_cycle")
+        self.assertEqual(source["lead_status"]["384"]["status"], "published")
+        self.assertEqual(gefs["missing_leads"], [])
 
     def test_partial_provider_preserves_successes_and_marks_gap(self):
         d, summary = self.collect(True)
