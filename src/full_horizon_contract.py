@@ -1,4 +1,8 @@
-"""Versioned acquisition-only horizon contract; no forecast/decision policy."""
+"""Versioned acquisition-only horizon contract; no forecast/decision policy.
+
+The public contract deliberately remains provider-native. Verified payloads are
+persisted by the private repository as mardorf-weather-archive-v2.
+"""
 from datetime import datetime, timezone
 import math
 
