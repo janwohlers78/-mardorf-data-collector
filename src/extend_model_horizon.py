@@ -103,10 +103,11 @@ def step_end(step_range):
     if value is None or abs(value-round(value))>1e-9:return None
     return int(round(value))
 
-def fetch_ifs(data):
+def fetch_ifs(data, requested_leads=None):
     base=cycle_from_existing(data,'ECMWF-IFS');out=[]
-    leads=leads_for_cycle('ECMWF-IFS',base)
-    client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
+    leads=leads_for_cycle('ECMWF-IFS',base) if requested_leads is None else list(requested_leads)
+    client_options = {} if requested_leads is None else {'maximum_retries': 2, 'retry_after': 5}
+    client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25',**client_options)
     with tempfile.TemporaryDirectory() as td:
         p=Path(td)/'ifs_medium_range_batch.grib2'
         client.retrieve(

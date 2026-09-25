@@ -499,8 +499,21 @@ def audit_models(path,cfg,now):
         issues.append(issue("FEWER_THAN_TWO_COMPLETE_CURRENT_INDEPENDENT_MODEL_FAMILIES","ERROR","collector","family_gate",
             "The private forecast must not treat this acquisition as sufficient multi-family evidence.",
             complete_current_families=complete_current_families,required_count=2,observed_count=len(complete_current_families)))
+    archive_summary = None
+    if "full_horizon_archive" in d:
+        from full_horizon_contract import validate_archive
+        try:
+            archive_summary = validate_archive(d)
+            if archive_summary["status"] != "complete":
+                issues.append(issue("FULL_HORIZON_ARCHIVE_PARTIAL", "WARN", "archive", "coverage",
+                    "Full-horizon collection has explicit gaps; legacy analysis coverage is unchanged.",
+                    coverage=archive_summary))
+        except Exception as exc:
+            issues.append(issue("FULL_HORIZON_ARCHIVE_INVALID", "ERROR", "archive", "integrity",
+                "Archive identities failed revalidation.", reason=str(exc)))
+            usable = False
     return make_report("models",now,sources,issues,usable,{
-        "input_file_present":True,"collector_mode":mode,
+        "input_file_present":True,"collector_mode":mode,"full_horizon_archive":archive_summary,
         "retrieved_at_utc":retrieval.isoformat() if retrieval else None,
         "complete_current_independent_families":complete_current_families,
         "minimum_two_complete_current_independent_families_met":usable,
@@ -842,3 +855,4 @@ def main():
 
 if __name__=="__main__":
     main()
+

@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "status": "design_not_yet_activated",
+  "owner": "public_collector_acquisition_private_normalization",
+  "parameters": [
+    {
+      "parameter_id": "air_temperature_2m",
+      "target_unit": "degC",
+      "dwd_fields": [
+        "t_2m"
+      ],
+      "ecmwf_fields": [
+        "2t"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "TMP|2 m above ground"
+      ],
+      "time_semantics": "instant",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "dewpoint_2m",
+      "target_unit": "degC",
+      "dwd_fields": [
+        "td_2m"
+      ],
+      "ecmwf_fields": [
+        "2d"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "DPT|2 m above ground"
+      ],
+      "time_semantics": "instant",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "relative_humidity_2m",
+      "target_unit": "percent",
+      "dwd_fields": [
+        "relhum_2m"
+      ],
+      "ecmwf_fields": [
+        "derived:2t+2d"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "RH|2 m above ground"
+      ],
+      "time_semantics": "instant",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "mean_sea_level_pressure",
+      "target_unit": "hPa",
+      "dwd_fields": [
+        "pmsl"
+      ],
+      "ecmwf_fields": [
+        "msl"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "PRMSL|mean sea level",
+        "PRES|mean sea level"
+      ],
+      "time_semantics": "instant",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "surface_pressure",
+      "target_unit": "hPa",
+      "dwd_fields": [
+        "ps"
+      ],
+      "ecmwf_fields": [
+        "sp"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "PRES|surface"
+      ],
+      "time_semantics": "instant",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "precipitation_amount",
+      "target_unit": "mm",
+      "dwd_fields": [
+        "tot_prec"
+      ],
+      "ecmwf_fields": [
+        "tp"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "APCP|surface"
+      ],
+      "time_semantics": "accumulation",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "total_cloud_fraction",
+      "target_unit": "1",
+      "dwd_fields": [
+        "clct"
+      ],
+      "ecmwf_fields": [
+        "tcc"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "TCDC|entire atmosphere"
+      ],
+      "time_semantics": "provider_defined",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "surface_downward_shortwave",
+      "target_unit": "separate:J/m2_or_W/m2",
+      "dwd_fields": [
+        "aswdir_s",
+        "aswdifd_s"
+      ],
+      "ecmwf_fields": [
+        "ssrd"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "DSWRF|surface"
+      ],
+      "time_semantics": "accumulation_or_average",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "cape_variant",
+      "target_unit": "J/kg",
+      "dwd_fields": [
+        "cape_ml"
+      ],
+      "ecmwf_fields": [
+        "mucape"
+      ],
+      "noaa_selectors_inventory_check_required": [
+        "CAPE|layer_required"
+      ],
+      "time_semantics": "instant_variant_specific",
+      "required_for_core_wind": false
+    },
+    {
+      "parameter_id": "cin_variant",
+      "target_unit": "J/kg",
+      "dwd_fields": [
+        "cin_ml"
+      ],
+      "ecmwf_fields": [],
+      "noaa_selectors_inventory_check_required": [
+        "CIN|layer_required"
+      ],
+      "time_semantics": "instant_variant_specific",
+      "required_for_core_wind": false
+    }
+  ],
+  "metadata_required": [
+    "model",
+    "provider_model_version",
+    "run_time_utc",
+    "valid_time_utc",
+    "retrieved_at_utc",
+    "first_seen_at_utc",
+    "availability_evidence_type",
+    "member_id",
+    "product",
+    "grid_id",
+    "actual_latitude",
+    "actual_longitude",
+    "paramId",
+    "shortName",
+    "units",
+    "typeOfLevel",
+    "level",
+    "stepType",
+    "startStep",
+    "endStep",
+    "stepUnits",
+    "source_sha256"
+  ],
+  "missing_policy": "null_and_explicit_status_never_zero",
+  "normalization_owner": "private_repository",
+  "new_models_planned": [
+    "IFS-ENS",
+    "GEFS-members",
+    "GEPS",
+    "AIFS",
+    "AIFS-ENS"
+  ],
+  "analysis_changes": false
+}
