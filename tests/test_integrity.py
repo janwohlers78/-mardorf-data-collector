@@ -121,6 +121,61 @@ class IntegrityAuditTests(unittest.TestCase):
         failures,_=audit_eps_hourly_source(broken,run,20)
         self.assertTrue(any(x["reason"]=="hourly_source_run_binding_evidence_missing" for x in failures),failures)
 
+    def icon_eu_currentness_bundle(self, now, run, with_selection):
+        rows=[]
+        selection={"requested_cycle_lead_hours":120,"fallback_used":False} if with_selection else None
+        for lead in POLICY["model_policy"]["project_desired_leads"]["ICON-EU"]:
+            rec={
+                "model":"ICON-EU","run_time_utc":run.isoformat(),
+                "forecast_lead_hours":lead,
+                "valid_time_utc":(run+timedelta(hours=lead)).isoformat(),
+                "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.34,"selection":"test"},
+                "derived":{"wind_speed_ms":5.0,"gust_ms":7.0},
+                "values":{}
+            }
+            if selection is not None:
+                rec["cycle_selection"]=selection
+            rows.append(rec)
+        return {"schema_version":1,"mode":"production","retrieved_at_utc":now.isoformat(),
+                "spot":{"lat":52.4942,"lon":9.3418},
+                "models":{"ICON-EU":rows},"quality":{"errors":[]}}
+
+    def test_icon_eu_newest_complete_cycle_gets_one_cycle_currentness_grace(self):
+        now=datetime(2026,9,25,15,30,tzinfo=timezone.utc)
+        run=datetime(2026,9,25,6,0,tzinfo=timezone.utc)
+        d=self.icon_eu_currentness_bundle(now,run,True)
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        icon_errors=[x for x in r["issues"] if x["source"]=="ICON-EU" and x["severity"]=="ERROR"]
+        self.assertFalse(any(x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY" for x in icon_errors),r["issues"])
+        warns=[x for x in r["issues"] if x["source"]=="ICON-EU" and x["code"]=="MODEL_RUN_EXCEEDS_FRESH_TARGET_BUT_IS_NEWEST_COMPLETE_PROVIDER_CYCLE"]
+        self.assertEqual(len(warns),1,r["issues"])
+        self.assertTrue(r["sources"]["ICON-EU"]["currentness_policy_pass"])
+        self.assertEqual(r["sources"]["ICON-EU"]["effective_maximum_run_age_hours"],15.0)
+
+    def test_icon_eu_age_grace_requires_newest_complete_cycle_evidence(self):
+        now=datetime(2026,9,25,15,30,tzinfo=timezone.utc)
+        run=datetime(2026,9,25,6,0,tzinfo=timezone.utc)
+        d=self.icon_eu_currentness_bundle(now,run,False)
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        errs=[x for x in r["issues"] if x["source"]=="ICON-EU" and x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY"]
+        self.assertEqual(len(errs),1,r["issues"])
+        self.assertFalse(r["sources"]["ICON-EU"]["currentness_policy_pass"])
+
+    def test_icon_eu_verified_cycle_still_fails_after_bounded_grace(self):
+        now=datetime(2026,9,25,21,30,tzinfo=timezone.utc)
+        run=datetime(2026,9,25,6,0,tzinfo=timezone.utc)
+        d=self.icon_eu_currentness_bundle(now,run,True)
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        errs=[x for x in r["issues"] if x["source"]=="ICON-EU" and x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY"]
+        self.assertEqual(len(errs),1,r["issues"])
+        self.assertFalse(r["sources"]["ICON-EU"]["currentness_policy_pass"])
+
     def test_complete_reduced_model_bundle_passes(self):
         now=datetime.now(timezone.utc)
         with tempfile.TemporaryDirectory() as td:
