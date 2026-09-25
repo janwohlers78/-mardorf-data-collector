@@ -47,7 +47,9 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(len(fetch.noaa_requests("GEFS-control", run, 240)), 1)
         queries = fetch.noaa_requests("GEFS-control", run, 246)
         self.assertEqual(len(queries), 2)
+        self.assertIn("filter_gefs_atmos_0p50a.pl", queries[0][1])
         self.assertIn("pgrb2a.0p50.f246", queries[0][1])
+        self.assertIn("filter_gefs_atmos_0p50b.pl", queries[1][1])
         self.assertIn("pgrb2b.0p50.f246", queries[1][1])
         self.assertIn("var_GUST=on", queries[1][1])
         self.assertTrue(queries[0][2])
@@ -72,7 +74,7 @@ class HorizonTests(unittest.TestCase):
             def __exit__(self, *args):
                 return False
             def get(self, url, timeout=None):
-                return Response(b"not-grib", fail=True) if "0p50b" in url else Response(b"GRIB-test")
+                return Response(b"not-grib", fail=True) if "pgrb2b" in url else Response(b"GRIB-test")
 
         class Nearest(list):
             point = {"latitude": 52.5, "longitude": 9.25}
