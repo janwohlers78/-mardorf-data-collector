@@ -7,14 +7,26 @@ from pathlib import Path
 from urllib.parse import urlencode
 import requests
 import extend_model_horizon as ext
-from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, extension_leads, validate_archive
+from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, extension_leads, validate_archive, gefs_lead_contract
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
+
+class PublicationUnavailable(RuntimeError):
+    """Required provider product is not yet available for the bound cycle."""
+
 def now(): return datetime.now(timezone.utc).isoformat()
 def noaa_requests(model,run,lead):
  day,hh=run.strftime("%Y%m%d"),run.strftime("%H")
- if model=="GFS": products=[("gfs_0p25","filter_gfs_0p25.pl",f"/gfs.{day}/{hh}/atmos",f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
- elif lead<=240: products=[("gefs_0p25s","filter_gefs_atmos_0p25s.pl",f"/gefs.{day}/{hh}/atmos/pgrb2sp25",f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
- else: products=[("gefs_0p50a","filter_gefs_atmos_0p50a.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],False)]
+ if model=="GFS":
+  products=[("gfs_0p25","filter_gfs_0p25.pl",f"/gfs.{day}/{hh}/atmos",f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
+ else:
+  contract=gefs_lead_contract(run,lead)
+  if not contract["expected"]:
+   raise ValueError(f"GEFS lead {lead} is not expected for {run:%HZ}; cycle maximum is {contract['expected_max_hours']} h")
+  if contract["wind_product"]=="gefs_0p25s":
+   products=[("gefs_0p25s","filter_gefs_atmos_0p25s.pl",f"/gefs.{day}/{hh}/atmos/pgrb2sp25",f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
+  else:
+   products=[("gefs_0p50a","filter_gefs_atmos_0p50a.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),
+             ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],contract["gust_required"])]
  out=[]
  for product,script,directory,filename,variables,required in products:
   q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"","leftlon":"9.0418","rightlon":"9.6418","toplat":"52.7942","bottomlat":"52.1942"}; q.update({"var_"+v:"on" for v in variables})
@@ -32,7 +44,7 @@ def _download(session,url,required,far_gefs):
   except Exception as exc:
    last=exc
    if i+1<attempts: time.sleep(5*(i+1))
- raise last
+ raise PublicationUnavailable(str(last)) from last
 def fetch_noaa(model,run,lead):
  vals,evidence,optional_errors,point={},[],[],None
  with requests.Session() as session,tempfile.TemporaryDirectory() as td:
@@ -48,7 +60,10 @@ def fetch_noaa(model,run,lead):
     for name,step,value in rows: vals.setdefault(name,[]).append({"stepRange":step,"value":value})
     evidence.append({"product":product,"url":url,"sha256":hashlib.sha256(content).hexdigest()})
    except Exception as exc:
-    if required: raise RuntimeError(f"required product {product} unavailable for same cycle {run.isoformat()} lead {lead}: {type(exc).__name__}: {exc}") from exc
+    if required:
+     message=f"required product {product} unavailable for same cycle {run.isoformat()} lead {lead}: {type(exc).__name__}: {exc}"
+     if isinstance(exc,PublicationUnavailable): raise PublicationUnavailable(message) from exc
+     raise RuntimeError(message) from exc
     optional_errors.append({"product":product,"url":url,"type":type(exc).__name__,"reason":str(exc)[:400]})
  def one(*names):
   for n in names:
@@ -63,14 +78,23 @@ def fetch_ifs(payload,leads):
  return rows
 def checkpoint(payload,path):
  a=payload["full_horizon_archive"]
- for s in a["sources"].values():s["records"].sort(key=lambda r:r["forecast_lead_hours"])
+ for model,s in a["sources"].items():
+  s["records"].sort(key=lambda r:r["forecast_lead_hours"])
+  core_leads=[int(r["forecast_lead_hours"]) for r in payload.get("models",{}).get(model,[]) if r.get("derived") and r.get("forecast_lead_hours") is not None]
+  archive_leads=[int(r["forecast_lead_hours"]) for r in s["records"] if r.get("derived")]
+  s["actual_max_lead"]=max(core_leads+archive_leads) if core_leads or archive_leads else None
  a["coverage"]=validate_archive(payload);a["updated_at_utc"]=now();tmp=path.with_suffix(".tmp");tmp.write_text(json.dumps(payload,separators=(",",":"),allow_nan=False)+"\n");tmp.replace(path)
 def collect(payload,path,workers=4):
  sources,jobs={},[]
  for model in MODELS:
-  core=payload.get("models",{}).get(model,[]);source={"records":[],"errors":[]};sources[model]=source
+  core=payload.get("models",{}).get(model,[]);source={"records":[],"errors":[],"lead_status":{}};sources[model]=source
   if not core:source["errors"].append({"reason":"parent_cycle_missing"});continue
-  run=ext.cycle_from_existing(payload,model);leads=extension_leads(model,run);source.update(run_time_utc=run.isoformat(),target_max_hours=maximum_hours(model,run),requested_extension_leads=leads)
+  run=ext.cycle_from_existing(payload,model);leads=extension_leads(model,run);expected_max=maximum_hours(model,run)
+  source.update(run_time_utc=run.isoformat(),target_max_hours=expected_max,expected_max_lead_for_cycle=expected_max,requested_extension_leads=leads)
+  for h in leads:source["lead_status"][str(h)]={"status":"pending"}
+  if model=="GEFS-control":
+   for h in range(246,841,6):
+    if h>expected_max:source["lead_status"][str(h)]={"status":"not_expected_for_cycle"}
   jobs.extend((model,leads[i:i+6]) for i in range(0,len(leads),6)) if model=="ECMWF-IFS" else jobs.extend((model,[h]) for h in leads)
  payload["full_horizon_archive"]={"method_version":VERSION,"started_at_utc":now(),"sources":sources};checkpoint(payload,path)
  with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -79,9 +103,19 @@ def collect(payload,path,workers=4):
    m,l=fs[f]
    try:
     rr=f.result();prior=list(sources[m]["records"]);sources[m]["records"].extend(rr)
+    for h in l:sources[m]["lead_status"][str(h)]={"status":"published","checked_at_utc":now()}
+    candidate_core=[int(r["forecast_lead_hours"]) for r in payload.get("models",{}).get(m,[]) if r.get("derived") and r.get("forecast_lead_hours") is not None]
+    candidate_tail=[int(r["forecast_lead_hours"]) for r in sources[m]["records"] if r.get("derived")]
+    sources[m]["actual_max_lead"]=max(candidate_core+candidate_tail) if candidate_core or candidate_tail else None
     try:validate_archive(payload)
-    except Exception:sources[m]["records"]=prior;raise
-   except Exception as exc:sources[m]["errors"].append({"leads":l,"type":type(exc).__name__,"reason":str(exc)[:600]})
+    except Exception:
+     sources[m]["records"]=prior
+     for h in l:sources[m]["lead_status"][str(h)]={"status":"fetch_error","checked_at_utc":now(),"reason":"archive_validation_rejected_result"}
+     raise
+   except Exception as exc:
+    status="not_yet_published" if isinstance(exc,PublicationUnavailable) else "fetch_error"
+    for h in l:sources[m]["lead_status"][str(h)]={"status":status,"checked_at_utc":now(),"reason":str(exc)[:400]}
+    sources[m]["errors"].append({"leads":l,"type":type(exc).__name__,"reason":str(exc)[:600],"retrieval_status":status})
    checkpoint(payload,path)
  return payload["full_horizon_archive"]["coverage"]
 def main():
