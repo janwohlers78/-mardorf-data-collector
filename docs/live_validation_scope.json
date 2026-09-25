@@ -1,0 +1,11 @@
+{
+  "required": [
+    "six_connected_model_sources_present",
+    "native_horizon_coverage_reported",
+    "integrity_error_count_zero",
+    "verified_private_receipt",
+    "private_promotion_success",
+    "weather_archive_v2_manifest_written"
+  ],
+  "analysis_cutover": false
+}
