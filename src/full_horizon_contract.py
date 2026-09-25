@@ -64,6 +64,7 @@ def validate_archive(payload):
             raise ValueError(f"{model}: archive parent/target mismatch")
         expected = set(extension_leads(model, run))
         seen = set()
+        missing_gust = []
         points = {}
         for row in source.get("records", []):
             h = row["forecast_lead_hours"]
