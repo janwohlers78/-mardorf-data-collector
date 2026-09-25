@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "status": "active",
+  "activated_at_utc": "2026-09-25T17:45:00Z",
+  "public_repository": "janwohlers78/mardorf-data-collector",
+  "private_repository": "janwohlers78/mardorf-kitevorhersage",
+  "public_payload_contract": "full-horizon-archive-v1",
+  "private_storage_contract": "mardorf-weather-archive-v2",
+  "transfer_boundary": "verified_immutable_model_receipt",
+  "analysis_compatibility_contract": "canonical-model-record-v1_unchanged",
+  "native_horizons_hours": {
+    "ICON-D2": 48,
+    "ICON-D2-EPS": 48,
+    "ICON-EU_main_cycles": 120,
+    "ICON-EU_intervening_cycles": 51,
+    "ECMWF-IFS_00_12": 360,
+    "ECMWF-IFS_06_18": 144,
+    "GFS": 384,
+    "GEFS-control_00": 840,
+    "GEFS-control_other": 384
+  },
+  "sampling": "3h_through_72h_then_6h",
+  "missing_optional_fields": "explicit_missing_never_zero",
+  "storage_owner": "private_repository",
+  "normalization_owner": "private_repository"
+}
