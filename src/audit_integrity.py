@@ -454,6 +454,22 @@ def audit_models(path,cfg,now):
                     "All recorded attempts for a requested acquisition stage failed; success in another stage does not mask this failure.",
                     stage=stage,attempts=stage_attempts))
         run_age=None;age_limit=float(cfg["model_policy"]["maximum_run_age_hours"][model])
+        grace_cfg=cfg["model_policy"].get("availability_verified_currentness_grace_hours") or {}
+        availability_grace=float(grace_cfg.get(model,0))
+        cycle_selections=[r.get("cycle_selection") for r in recs if isinstance(r.get("cycle_selection"),dict)]
+        newest_complete_selection_verified=bool(
+            model=="ICON-EU" and cycle_selections and pmax is not None and
+            any(
+                not bool(s.get("fallback_used")) and
+                isinstance(s.get("requested_cycle_lead_hours"),(int,float)) and
+                float(s["requested_cycle_lead_hours"])>=float(pmax)
+                for s in cycle_selections
+            )
+        )
+        effective_age_limit=age_limit+availability_grace if newest_complete_selection_verified else age_limit
+        currentness_mode="nominal_age_limit"
+        if newest_complete_selection_verified:
+            currentness_mode="provider_verified_newest_complete_cycle"
         if run:
             run_age=(now-run).total_seconds()/3600
             future_tol=float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60
@@ -462,16 +478,27 @@ def audit_models(path,cfg,now):
                     "The selected model cycle is timestamped too far in the future.",
                     run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
                     allowed_future_hours=round(future_tol,3)))
-            elif run_age>age_limit:
+            elif run_age>effective_age_limit:
                 issues.append(issue("MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY","ERROR",model,"currentness",
-                    "A newer provider cycle should normally be available; the exact excess age is recorded.",
+                    "The selected cycle exceeds the allowed age even after any provider-availability evidence is applied.",
                     run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
-                    maximum_run_age_hours=age_limit,excess_age_hours=round(run_age-age_limit,3)))
+                    nominal_maximum_run_age_hours=age_limit,effective_maximum_run_age_hours=effective_age_limit,
+                    availability_verified_grace_hours=availability_grace if newest_complete_selection_verified else 0,
+                    newest_complete_selection_verified=newest_complete_selection_verified,
+                    excess_age_hours=round(run_age-effective_age_limit,3)))
+            elif run_age>age_limit and newest_complete_selection_verified:
+                issues.append(issue("MODEL_RUN_EXCEEDS_FRESH_TARGET_BUT_IS_NEWEST_COMPLETE_PROVIDER_CYCLE","WARN",model,"currentness",
+                    "The run exceeds the nominal freshness target, but acquisition proved it was the newest provider cycle complete through the required horizon.",
+                    run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
+                    nominal_maximum_run_age_hours=age_limit,effective_maximum_run_age_hours=effective_age_limit,
+                    availability_verified_grace_hours=availability_grace))
 
         sources[model]={
             "family":FAMILY[model],"record_count":len(recs),
             "selected_run_time_utc":run.isoformat() if run else None,"selected_cycle_hour_utc":run_hour,
             "run_age_hours":round(run_age,3) if run_age is not None else None,"maximum_run_age_hours":age_limit,
+            "effective_maximum_run_age_hours":effective_age_limit,"currentness_mode":currentness_mode,
+            "newest_complete_selection_verified":newest_complete_selection_verified,
             "provider_expected_max_horizon_hours":pmax,"project_desired_max_horizon_hours":max(desired_leads(model,cfg)),
             "expected_collection_leads_hours":expected,"received_leads_hours":got,"missing_expected_leads_hours":missing,
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
@@ -490,7 +517,7 @@ def audit_models(path,cfg,now):
             "out_of_horizon_records":outside_horizon_records,
             "quality_error_messages":model_qerrors,
             "provider_cycle_complete":not any([missing,duplicates,invalid_lead_rows,model_identity_failures,field_failures,coordinate_failures,timestamp_failures,critical_source_errors,model_qerrors,identity_failures,member_failures,hourly_source_failures]) and run is not None,
-            "currentness_policy_pass":run_age is not None and run_age<=age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
+            "currentness_policy_pass":run_age is not None and run_age<=effective_age_limit and run_age>=-float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60,
         }
 
     complete_current_families=sorted({v["family"] for v in sources.values() if v["provider_cycle_complete"] and v["currentness_policy_pass"]})
