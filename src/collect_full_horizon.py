@@ -14,7 +14,7 @@ def noaa_requests(model,run,lead):
  day,hh=run.strftime("%Y%m%d"),run.strftime("%H")
  if model=="GFS": products=[("gfs_0p25","filter_gfs_0p25.pl",f"/gfs.{day}/{hh}/atmos",f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
  elif lead<=240: products=[("gefs_0p25s","filter_gefs_atmos_0p25s.pl",f"/gefs.{day}/{hh}/atmos/pgrb2sp25",f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
- else: products=[("gefs_0p50a","filter_gens_0p50.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),("gefs_0p50b","filter_gens_0p50.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],False)]
+ else: products=[("gefs_0p50a","filter_gefs_atmos_0p50a.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],False)]
  out=[]
  for product,script,directory,filename,variables,required in products:
   q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"","leftlon":"9.0418","rightlon":"9.6418","toplat":"52.7942","bottomlat":"52.1942"}; q.update({"var_"+v:"on" for v in variables})
@@ -22,7 +22,7 @@ def noaa_requests(model,run,lead):
  return out
 def _download(session,url,required,far_gefs):
  # Same-cycle publication-aware retry. Never silently mix model cycles.
- attempts=4 if (required and far_gefs) else 1
+ attempts=2 if (required and far_gefs) else 1
  last=None
  for i in range(attempts):
   try:
@@ -31,7 +31,7 @@ def _download(session,url,required,far_gefs):
    return r.content
   except Exception as exc:
    last=exc
-   if i+1<attempts: time.sleep(20*(i+1))
+   if i+1<attempts: time.sleep(5*(i+1))
  raise last
 def fetch_noaa(model,run,lead):
  vals,evidence,optional_errors,point={},[],[],None
