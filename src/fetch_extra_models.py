@@ -34,12 +34,9 @@ def derived(u,v,g=None):
  return z
 
 def grib_run_time(path):
-    observed=grib_run_times(path)
-    if len(observed)!=1:
-        raise RuntimeError(
-            f'ECMWF GRIB batch contains multiple model reference times: '
-            f'{[x.isoformat() for x in observed]}')
-    return observed[0]
+ observed=grib_run_times(path)
+ if len(observed)!=1: raise RuntimeError(f'ECMWF GRIB batch contains multiple model reference times: {[x.isoformat() for x in observed]}')
+ return observed[0]
 
 def step_end(step_range):
  value=_step_end_hours(step_range)
@@ -49,27 +46,19 @@ def step_end(step_range):
 def fetch_ifs(leads):
  out=[]
  with tempfile.TemporaryDirectory() as td:
-  target=Path(td)/'ifs_batch.grib2'
-  client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
-  result=client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target))
-  run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}
-  rows=nearest(target);point=rows.point
+  target=Path(td)/'ifs_batch.grib2'; client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
+  client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target))
+  run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}; rows=nearest(target);point=rows.point
   for n,s,v in rows:
    lead=step_end(s)
-   if lead not in bylead: continue
-   bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
+   if lead in bylead:bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})
   for lead in leads:
    vals=bylead[int(lead)]
    def one(*names):
     for n in names:
      if n in vals and vals[n]: return vals[n][0]['value']
-    return None
    u=one('10u');v=one('10v');g=one('10fg','10fg3','10fg6')
-   rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,
-        'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),
-        'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,
-        'forecast_coordinate_or_grid_point':point,
-        'source_request':{'steps':leads,'retrieved_run_time_utc':run.isoformat()}}
+   rec={'model':'ECMWF-IFS','run_time_utc':run.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(run+timedelta(hours=lead)).isoformat(),'source':f'ECMWF Open Data via {ECMWF_SOURCE} mirror raw GRIB2','values':vals,'forecast_coordinate_or_grid_point':point,'source_request':{'steps':leads,'retrieved_run_time_utc':run.isoformat()}}
    if u is not None and v is not None:rec['derived']=derived(u,v,g)
    out.append(rec)
  return out
@@ -79,20 +68,29 @@ def gefs_url(cycle,lead):
  q={'file':f'gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}','lev_10_m_above_ground':'on','lev_surface':'on','var_UGRD':'on','var_VGRD':'on','var_GUST':'on','var_APCP':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2sp25'}
  return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p25s.pl?'+urlencode(q)
 
-def discover_gefs(required_lead=0):
+def gefs_far_url(cycle,lead=384):
+ ymd,hh=cycle[:8],cycle[8:]
+ q={'file':f'gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}','lev_10_m_above_ground':'on','var_UGRD':'on','var_VGRD':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2ap5'}
+ return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p50a.pl?'+urlencode(q)
+
+def discover_gefs(required_lead=0,require_far_horizon=False):
  now=datetime.now(timezone.utc); attempts=[]
  for dd in range(3):
   d=(now-timedelta(days=dd)).date()
   for hh in ['18','12','06','00']:
-   cyc=f'{d:%Y%m%d}{hh}'
-   try:r=S.get(gefs_url(cyc,required_lead),timeout=35)
+   cyc=f'{d:%Y%m%d}{hh}'; probe=gefs_far_url(cyc,384) if require_far_horizon else gefs_url(cyc,required_lead)
+   try:r=S.get(probe,timeout=35)
    except Exception as e: attempts.append((cyc,'EXC',str(e)[:80])); continue
    attempts.append((cyc,r.status_code,len(r.content),r.content[:4]))
    if r.status_code==200 and r.content[:4]==b'GRIB': return cyc
- raise RuntimeError(f'No GEFS control cycle with lead {required_lead} discovered; attempts={attempts}')
+ raise RuntimeError(f'No GEFS control cycle satisfying publication requirement discovered; far={require_far_horizon}; attempts={attempts}')
 
 def fetch_gefs(leads):
- cyc=discover_gefs(max(leads) if leads else 0); base=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
+ # Full-model validation must bind the base snapshot to a cycle whose far-horizon
+ # pgrb2a product is already published. Otherwise a fresh 0.25-degree cycle can
+ # be selected while its >240 h 0.5-degree files are still in the publication race.
+ mature=os.getenv('FULL_VALIDATION','').lower()=='true'
+ cyc=discover_gefs(max(leads) if leads else 0,require_far_horizon=mature); base=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
  with tempfile.TemporaryDirectory() as td:
   for lead in leads:
    url=gefs_url(cyc,lead); r=S.get(url,timeout=90); r.raise_for_status()
@@ -103,7 +101,7 @@ def fetch_gefs(leads):
     for n in ns:
      if n in vals and vals[n]: return vals[n][0]['value']
    u=one('10u','u'); v=one('10v','v'); g=one('gust','10fg')
-   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point}
+   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point,'cycle_selection':{'far_horizon_publication_required':mature}}
    if u is not None and v is not None: rec['derived']=derived(u,v,g)
    out.append(rec)
  return out
@@ -118,8 +116,7 @@ def main():
   data['quality'][name]={'records':len(data['models'][name]),'derived_records':good,'success':complete,'complete_requested_horizon':complete}
  goodmodels=[n for n,q in data['quality'].items() if isinstance(q,dict) and q.get('success')]
  data['quality']['successful_models']=goodmodels;data['quality']['minimum_two_independent_models_met']=len(goodmodels)>=2;data['quality'].setdefault('errors',[]);data['quality']['errors']+=errors
- data['extended_retrieved_at_utc']=datetime.now(timezone.utc).isoformat()
- data['retrieved_at_utc']=data['extended_retrieved_at_utc']
+ data['extended_retrieved_at_utc']=datetime.now(timezone.utc).isoformat();data['retrieved_at_utc']=data['extended_retrieved_at_utc']
  p.write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')
  print(json.dumps({'ECMWF-IFS':data['quality']['ECMWF-IFS'],'GEFS-control':data['quality']['GEFS-control'],'errors':errors,'output_bytes':p.stat().st_size},indent=2))
  if not data['quality']['ECMWF-IFS']['success'] or not data['quality']['GEFS-control']['success']: raise SystemExit(2)
