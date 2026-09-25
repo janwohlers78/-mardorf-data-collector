@@ -240,6 +240,11 @@ jobs:
           done
           exit "$last"
 
+      - name: Archive remaining native model horizons without changing analysis inputs
+        if: (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && (github.event_name != 'push' || contains(github.event.head_commit.message, '[full-model-validation]')) && inputs.test_mode != true
+        continue-on-error: true
+        run: timeout --signal=TERM --kill-after=15s 12m python src/collect_full_horizon.py
+
       - name: Audit every model source, lead, timestamp and required field
         if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |
@@ -274,3 +279,4 @@ jobs:
           if d['error_count']:
               raise SystemExit(1)
           PY
+
