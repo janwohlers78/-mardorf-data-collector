@@ -50,6 +50,43 @@ class HorizonTests(unittest.TestCase):
         self.assertIn("pgrb2a.0p50.f246", queries[0][1])
         self.assertIn("pgrb2b.0p50.f246", queries[1][1])
         self.assertIn("var_GUST=on", queries[1][1])
+        self.assertTrue(queries[0][2])
+        self.assertFalse(queries[1][2])
+
+    def test_gefs_far_horizon_keeps_wind_when_secondary_gust_product_lags(self):
+        run = datetime(2026, 9, 25, 6, tzinfo=timezone.utc)
+
+        class Response:
+            def __init__(self, content, fail=False):
+                self.content = content
+                self.fail = fail
+            def raise_for_status(self):
+                if self.fail:
+                    raise RuntimeError("secondary product not yet published")
+
+        class Session:
+            def __init__(self):
+                self.headers = {}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def get(self, url, timeout=None):
+                return Response(b"not-grib", fail=True) if "0p50b" in url else Response(b"GRIB-test")
+
+        class Nearest(list):
+            point = {"latitude": 52.5, "longitude": 9.25}
+
+        nearest = Nearest([("10u", "246", 3.0), ("10v", "246", 4.0), ("tp", "240-246", 0.2)])
+        with patch.object(fetch.requests, "Session", Session), \
+             patch.object(fetch.ext, "assert_grib_valid_time"), \
+             patch.object(fetch.ext, "nearest", return_value=nearest):
+            row = fetch.fetch_noaa("GEFS-control", run, 246)[0]
+        self.assertAlmostEqual(row["derived"]["wind_speed_ms"], 5.0)
+        self.assertNotIn("gust_ms", row["derived"])
+        self.assertEqual(row["field_availability"], {"wind_uv": True, "gust": False})
+        self.assertEqual(row["provider_product"], "gefs_0p50a")
+        self.assertEqual(row["optional_product_errors"][0]["product"], "gefs_0p50b")
 
     def collect(self, fail=False):
         d = payload()
@@ -76,6 +113,29 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(summary["sources"]["GFS"]["missing_leads"], [180])
         self.assertEqual(summary["sources"]["GEFS-control"]["status"], "complete")
         self.assertTrue(d["full_horizon_archive"]["sources"]["GFS"]["errors"])
+
+    def test_explicit_far_gefs_gust_gap_preserves_complete_wind_horizon(self):
+        d, summary = self.collect()
+        source = d["full_horizon_archive"]["sources"]["GEFS-control"]
+        row = next(r for r in source["records"] if r["forecast_lead_hours"] > 240)
+        row["derived"].pop("gust_ms")
+        row["field_availability"] = {"wind_uv": True, "gust": False}
+        summary = c.validate_archive(d)
+        gefs = summary["sources"]["GEFS-control"]
+        self.assertTrue(gefs["horizon_complete"])
+        self.assertFalse(gefs["gust_complete"])
+        self.assertEqual(gefs["missing_leads"], [])
+        self.assertEqual(gefs["status"], "partial_optional_fields")
+        self.assertEqual(summary["horizon_status"], "complete")
+        self.assertEqual(summary["status"], "partial")
+
+    def test_far_gefs_missing_gust_without_marker_is_rejected(self):
+        d, _ = self.collect()
+        source = d["full_horizon_archive"]["sources"]["GEFS-control"]
+        row = next(r for r in source["records"] if r["forecast_lead_hours"] > 240)
+        row["derived"].pop("gust_ms")
+        with self.assertRaises(ValueError):
+            c.validate_archive(d)
 
     def test_corrupt_time_and_duplicate_rejected(self):
         d, _ = self.collect()

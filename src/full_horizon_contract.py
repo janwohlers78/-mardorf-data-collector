@@ -54,7 +54,7 @@ def validate_archive(payload):
         if not core:
             if source.get("records"):
                 raise ValueError(f"{model}: archive lacks parent cycle")
-            summary[model] = {"status": "parent_missing", "complete": False}
+            summary[model] = {"status": "parent_missing", "complete": False, "horizon_complete": False, "gust_complete": False}
             continue
         runs = {utc(r["run_time_utc"]) for r in core}
         if len(runs) != 1:
@@ -64,6 +64,7 @@ def validate_archive(payload):
             raise ValueError(f"{model}: archive parent/target mismatch")
         expected = set(extension_leads(model, run))
         seen = set()
+        missing_gust = []
         points = {}
         for row in source.get("records", []):
             h = row["forecast_lead_hours"]
@@ -90,15 +91,28 @@ def validate_archive(payload):
             if product in points and points[product] != point:
                 raise ValueError(f"{model}: grid changed within product")
             points[product] = point
-            for field in ("wind_speed_ms", "gust_ms"):
-                value = row.get("derived", {}).get(field)
-                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
-                    raise ValueError(f"{model}: invalid {field}")
+            wind = row.get("derived", {}).get("wind_speed_ms")
+            if not isinstance(wind, (int, float)) or isinstance(wind, bool) or not math.isfinite(wind) or wind < 0:
+                raise ValueError(f"{model}: invalid wind_speed_ms")
+            gust = row.get("derived", {}).get("gust_ms")
+            if gust is None:
+                availability = row.get("field_availability") or {}
+                if not (model == "GEFS-control" and h > 240 and availability.get("gust") is False):
+                    raise ValueError(f"{model}: gust missing without explicit provider-unavailable marker")
+                missing_gust.append(h)
+            elif not isinstance(gust, (int, float)) or isinstance(gust, bool) or not math.isfinite(gust) or gust < 0:
+                raise ValueError(f"{model}: invalid gust_ms")
         core_leads = {r.get("forecast_lead_hours") for r in core if r.get("derived")}
         missing = sorted(set(sampled_leads(model, run)) - core_leads - seen)
-        summary[model] = {"status": "complete" if not missing else "partial",
-                          "complete": not missing, "target_max_hours": maximum_hours(model, run),
+        horizon_complete = not missing
+        gust_complete = not missing_gust
+        complete = horizon_complete and gust_complete
+        status = "complete" if complete else ("partial_optional_fields" if horizon_complete else "partial")
+        summary[model] = {"status": status, "complete": complete, "horizon_complete": horizon_complete,
+                          "gust_complete": gust_complete, "target_max_hours": maximum_hours(model, run),
                           "received_extension_leads": sorted(seen), "missing_leads": missing,
+                          "missing_gust_leads": sorted(missing_gust),
                           "product_grid_points": {k: list(v) for k, v in points.items()}}
+    horizon_complete = all(s.get("horizon_complete", s.get("complete", False)) for s in summary.values())
     return {"status": "complete" if all(s["complete"] for s in summary.values()) else "partial",
-            "sources": summary}
+            "horizon_status": "complete" if horizon_complete else "partial", "sources": summary}

@@ -26,56 +26,71 @@ def noaa_requests(model, run, lead):
     day, hh = run.strftime("%Y%m%d"), run.strftime("%H")
     if model == "GFS":
         products = [("gfs_0p25", "filter_gfs_0p25.pl", f"/gfs.{day}/{hh}/atmos",
-                     f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}", ["UGRD", "VGRD", "GUST", "APCP"])]
+                     f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}", ["UGRD", "VGRD", "GUST", "APCP"], True)]
     elif lead <= 240:
         products = [("gefs_0p25s", "filter_gefs_atmos_0p25s.pl", f"/gefs.{day}/{hh}/atmos/pgrb2sp25",
-                     f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}", ["UGRD", "VGRD", "GUST", "APCP"])]
+                     f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}", ["UGRD", "VGRD", "GUST", "APCP"], True)]
     else:
-        # Wind/precipitation are in product a; gust is only in product b.
-        products = [(f"gefs_0p50{part}", f"filter_gefs_atmos_0p50{part}.pl",
-                     f"/gefs.{day}/{hh}/atmos/pgrb2{part}p5",
-                     f"gec00.t{hh}z.pgrb2{part}.0p50.f{lead:03d}", variables)
-                    for part, variables in (("a", ["UGRD", "VGRD", "APCP"]), ("b", ["GUST"]))]
+        # U/V wind and precipitation are in product a. Gust is in product b,
+        # whose NOMADS publication can lag product a. Keep the wind record if
+        # b is not yet available and mark gust availability explicitly.
+        products = [
+            ("gefs_0p50a", "filter_gefs_atmos_0p50a.pl", f"/gefs.{day}/{hh}/atmos/pgrb2ap5",
+             f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}", ["UGRD", "VGRD", "APCP"], True),
+            ("gefs_0p50b", "filter_gefs_atmos_0p50b.pl", f"/gefs.{day}/{hh}/atmos/pgrb2bp5",
+             f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}", ["GUST"], False),
+        ]
     result = []
-    for product, script, directory, filename, variables in products:
+    for product, script, directory, filename, variables, required in products:
         query = {"file": filename, "dir": directory, "lev_10_m_above_ground": "on", "lev_surface": "on",
                  "subregion": "", "leftlon": "9.0418", "rightlon": "9.6418", "toplat": "52.7942", "bottomlat": "52.1942"}
         query.update({"var_" + v: "on" for v in variables})
-        result.append((product, "https://nomads.ncep.noaa.gov/cgi-bin/" + script + "?" + urlencode(query)))
+        result.append((product, "https://nomads.ncep.noaa.gov/cgi-bin/" + script + "?" + urlencode(query), required))
     return result
 
 def fetch_noaa(model, run, lead):
-    vals, evidence, point = {}, [], None
+    vals, evidence, optional_errors, point = {}, [], [], None
     with requests.Session() as session, tempfile.TemporaryDirectory() as td:
         session.headers.update({"User-Agent": "mardorf-data-collector/full-horizon-v1"})
-        for product, url in noaa_requests(model, run, lead):
-            response = session.get(url, timeout=(10, 45))
-            response.raise_for_status()
-            if not response.content.startswith(b"GRIB"):
-                raise ValueError("NOMADS response is not GRIB")
-            path = Path(td) / (product + ".grib2")
-            path.write_bytes(response.content)
-            ext.assert_grib_valid_time(path, run, run + timedelta(hours=lead), f"{model} archive {lead}")
-            rows = ext.nearest(path)
-            if point is not None and point != rows.point:
-                raise ValueError("GEFS a/b extraction points differ")
-            point = rows.point
-            for name, step, value in rows:
-                vals.setdefault(name, []).append({"stepRange": step, "value": value})
-            evidence.append({"product": product, "url": url, "sha256": hashlib.sha256(response.content).hexdigest()})
+        for product, url, required in noaa_requests(model, run, lead):
+            try:
+                response = session.get(url, timeout=(10, 45))
+                response.raise_for_status()
+                if not response.content.startswith(b"GRIB"):
+                    raise ValueError("NOMADS response is not GRIB")
+                path = Path(td) / (product + ".grib2")
+                path.write_bytes(response.content)
+                ext.assert_grib_valid_time(path, run, run + timedelta(hours=lead), f"{model} archive {lead}")
+                rows = ext.nearest(path)
+                if point is not None and point != rows.point:
+                    raise ValueError("GEFS a/b extraction points differ")
+                point = rows.point
+                for name, step, value in rows:
+                    vals.setdefault(name, []).append({"stepRange": step, "value": value})
+                evidence.append({"product": product, "url": url, "sha256": hashlib.sha256(response.content).hexdigest()})
+            except Exception as exc:
+                if required:
+                    raise
+                optional_errors.append({"product": product, "url": url, "type": type(exc).__name__,
+                                        "reason": str(exc)[:400]})
     def one(*names):
         for name in names:
             if vals.get(name):
                 return vals[name][0]["value"]
         return None
     u, v, gust = one("10u", "u"), one("10v", "v"), one("gust", "10fg")
-    if any(x is None for x in (u, v, gust)):
-        raise ValueError("required U/V/gust absent from returned product")
+    if u is None or v is None:
+        raise ValueError("required U/V absent from returned product")
+    allow_missing_gust = model == "GEFS-control" and lead > 240
+    if gust is None and not allow_missing_gust:
+        raise ValueError("required gust absent from returned product")
     return [{"model": model, "run_time_utc": run.isoformat(), "forecast_lead_hours": lead,
              "valid_time_utc": (run + timedelta(hours=lead)).isoformat(), "retrieved_at_utc": now(),
              "provider_product": "+".join(x["product"] for x in evidence),
              "source": "NOAA/NCEP NOMADS GRIB2 full horizon", "source_urls": [x["url"] for x in evidence],
-             "grib_evidence": evidence, "forecast_coordinate_or_grid_point": point,
+             "grib_evidence": evidence, "optional_product_errors": optional_errors,
+             "field_availability": {"wind_uv": True, "gust": gust is not None},
+             "forecast_coordinate_or_grid_point": point,
              "values": vals, "derived": ext.derived(u, v, gust)}]
 
 def fetch_ifs(payload, leads):
