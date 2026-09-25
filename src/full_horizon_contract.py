@@ -2,6 +2,7 @@
 
 The public contract deliberately remains provider-native. Verified payloads are
 persisted by the private repository as mardorf-weather-archive-v2.
+Full-horizon live proof generation: 2026-09-25-gefs-0p50-v2.
 """
 from datetime import datetime, timezone
 import math
