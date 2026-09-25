@@ -277,6 +277,9 @@
         "gust_parameter_semantics": "Open Data maximum 10 m gust is 10fg; GRIB/index data may expose the 3-hour product as 10fg3 (paramId 228028) for steps 3-144, so the collector requests and accepts both aliases.",
         "horizon_source_note": "The technical Open Data file-layout documentation currently lists deterministic 06/18 UTC oper/fc through 90 h; the overview catalogue page lists 144 h. The collector conservatively gates 06/18 UTC at 90 h until the technical documentation/provider files converge."
       }
+    },
+    "availability_verified_currentness_grace_hours": {
+      "ICON-EU": 6
     }
   },
   "svg_policy": {
