@@ -31,13 +31,15 @@ def noaa_requests(model, run, lead):
         products = [("gefs_0p25s", "filter_gefs_atmos_0p25s.pl", f"/gefs.{day}/{hh}/atmos/pgrb2sp25",
                      f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}", ["UGRD", "VGRD", "GUST", "APCP"], True)]
     else:
-        # U/V wind and precipitation are in product a. Gust is in product b,
-        # whose NOMADS publication can lag product a. Keep the wind record if
-        # b is not yet available and mark gust availability explicitly.
+        # The 0.25-degree selected-parameter GEFS product ends at FH240.
+        # NOMADS publishes FH246+ through the 0.5-degree pgrb2a/pgrb2b trees,
+        # both served by the generic GENS 0.5-degree CGI filter. Product a
+        # carries U/V wind and precipitation; product b carries gust and can
+        # lag product a. Keep the wind record when b is temporarily absent.
         products = [
-            ("gefs_0p50a", "filter_gefs_atmos_0p50a.pl", f"/gefs.{day}/{hh}/atmos/pgrb2ap5",
+            ("gefs_0p50a", "filter_gens_0p50.pl", f"/gefs.{day}/{hh}/atmos/pgrb2ap5",
              f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}", ["UGRD", "VGRD", "APCP"], True),
-            ("gefs_0p50b", "filter_gefs_atmos_0p50b.pl", f"/gefs.{day}/{hh}/atmos/pgrb2bp5",
+            ("gefs_0p50b", "filter_gens_0p50.pl", f"/gefs.{day}/{hh}/atmos/pgrb2bp5",
              f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}", ["GUST"], False),
         ]
     result = []
