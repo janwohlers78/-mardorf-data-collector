@@ -76,7 +76,8 @@ def fetch_base(d,model,test):
     elif model=="ECMWF-IFS":
         rows=extra.fetch_ifs(leads)
     elif model=="GEFS-control":
-        rows=extra.fetch_gefs(leads)
+        rows,selection_evidence=extra.fetch_gefs(leads,return_selection_evidence=True)
+        d.setdefault("provider_selection_evidence",{})["GEFS-control"]=selection_evidence
     elif model=="ICON-EU":
         rows=dwd.fetch_icon_eu(leads,required_cycle_lead=None if test else 120)
     elif model=="ICON-D2-EPS":

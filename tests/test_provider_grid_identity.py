@@ -23,7 +23,15 @@ def point_rows(cls, step="0"):
 
 class ProviderGridIdentityTests(unittest.TestCase):
     def test_gefs_base_persists_selected_grid_point(self):
-        with patch.object(extra,"discover_gefs",return_value="2026092006"), \
+        evidence={
+            "method_version":"gefs-newest-mature-cycle-selection-v1",
+            "full_horizon_publication_required":False,
+            "selected_cycle_run_time_utc":"2026-09-20T06:00:00+00:00",
+            "selected_expected_max_lead_hours":384,
+            "selected_publication_probe_lead":0,
+            "attempts":[],
+        }
+        with patch.object(extra,"discover_gefs",return_value=("2026092006",evidence)), \
              patch.object(extra.S,"get",return_value=FakeResponse()), \
              patch.object(extra,"assert_grib_valid_time"), \
              patch.object(extra,"nearest",side_effect=lambda path: point_rows(extra.NearestRows)):

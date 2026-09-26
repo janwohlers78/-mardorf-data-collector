@@ -278,6 +278,17 @@
         "currentness_rationale": "IFS Open Data is released at the end of the real-time dissemination schedule. Around cycle transitions the preceding public run can legitimately exceed 12 h age; a 14 h limit covers the documented dissemination window with a small margin while retaining a strict freshness gate.",
         "gust_parameter_semantics": "Open Data maximum 10 m gust is 10fg; GRIB/index data may expose the 3-hour product as 10fg3 (paramId 228028) for steps 3-144, so the collector requests and accepts both aliases.",
         "horizon_source_note": "The technical Open Data file-layout documentation currently lists deterministic 06/18 UTC oper/fc through 90 h; the overview catalogue page lists 144 h. The collector conservatively gates 06/18 UTC at 90 h until the technical documentation/provider files converge."
+      },
+      "GEFS-control": {
+        "policy_version": "gefs-mature-cycle-currentness-v1",
+        "nominal_currentness_limit_hours": 12,
+        "full_validation_rule": "If the selected GEFS cycle exceeds nominal age during FULL_VALIDATION, the collector must prove it is the newest scheduled cycle whose cycle-specific terminal native horizon is published. A valid proof downgrades only the GEFS age violation to WARN; the run remains non-current and is excluded from the complete-current-family gate.",
+        "proof_requirements": [
+          "selected cycle terminal horizon probe is published",
+          "every newer due 6-hour GEFS cycle is explicitly probed at its own cycle-specific terminal horizon",
+          "every newer due cycle is proven not_published; request errors do not qualify as maturity evidence"
+        ],
+        "safety_property": "The exception never changes currentness_policy_pass to true and never relaxes required full-horizon coverage."
       }
     },
     "icon_tier_a": {
