@@ -1,0 +1,55 @@
+name: Phase 2c GEFS pgrb2b diagnostic
+
+on:
+  push:
+    branches:
+      - phase2c-noaa-final-canary-v2
+    paths:
+      - .github/workflows/phase2c-gefs-b-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe current GEFS b product combinations
+        run: |
+          python - <<'PY'
+          import json,time,urllib.parse,urllib.request,urllib.error
+          day="20260926"; hh="06"
+          base="https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p50b.pl"
+          cases=[
+            ("dpt",{"lev_2_m_above_ground":"on","var_DPT":"on"}),
+            ("cape_surface",{"lev_surface":"on","var_CAPE":"on","var_CIN":"on"}),
+            ("cape_255",{"lev_255-0_mb_above_ground":"on","var_CAPE":"on","var_CIN":"on"}),
+            ("weather_all",{"lev_2_m_above_ground":"on","lev_surface":"on","lev_255-0_mb_above_ground":"on","var_DPT":"on","var_CAPE":"on","var_CIN":"on"}),
+          ]
+          out=[]
+          for lead in (246,384):
+            for label,extra in cases:
+              q={"file":f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}","dir":f"/gefs.{day}/{hh}/atmos/pgrb2bp5",
+                 "subregion":"","leftlon":"8.5918","rightlon":"10.0918","toplat":"53.2442","bottomlat":"51.7442",**extra}
+              url=base+"?"+urllib.parse.urlencode(q)
+              t=time.monotonic()
+              try:
+                req=urllib.request.Request(url,headers={"User-Agent":"mardorf-data-collector/phase2c-gefs-b-diagnostic"})
+                with urllib.request.urlopen(req,timeout=45) as r:
+                  raw=r.read()
+                  row={"lead":lead,"case":label,"status":r.status,"bytes":len(raw),"grib":raw[:4]==b"GRIB","elapsed":round(time.monotonic()-t,3)}
+              except urllib.error.HTTPError as e:
+                raw=e.read()
+                row={"lead":lead,"case":label,"status":e.code,"bytes":len(raw),"grib":raw[:4]==b"GRIB","body":raw[:160].decode("utf-8","replace"),"elapsed":round(time.monotonic()-t,3)}
+              except Exception as e:
+                row={"lead":lead,"case":label,"status":None,"error":f"{type(e).__name__}: {e}","elapsed":round(time.monotonic()-t,3)}
+              out.append(row)
+              print(json.dumps(row,sort_keys=True))
+          open("gefs_b_probe.json","w").write(json.dumps(out,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase2c-gefs-b-diagnostic
+          path: gefs_b_probe.json
+          retention-days: 3
