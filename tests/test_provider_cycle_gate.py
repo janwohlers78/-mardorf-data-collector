@@ -1,7 +1,7 @@
 import copy
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +85,31 @@ class ProviderCycleGateTests(unittest.TestCase):
             plan,_=gate.build_plan("owner/private","token",True,discover_fn=lambda model,full: RUN)
         self.assertTrue(plan["any_work"])
         self.assertTrue(all(x["action"]=="fetch" for x in plan["models"].values()))
+
+    def test_gefs_supplemental_retry_is_due_only_after_not_before(self):
+        payload={
+            "full_horizon_archive":{
+                "sources":{
+                    "GEFS-control":{
+                        "run_time_utc":RUN.isoformat(),
+                        "gefs_pgrb2b_supplemental_retry":{
+                            "status":"pending",
+                            "attempts":0,
+                            "maximum_attempts":1,
+                            "next_retry_not_before_utc":(RUN+timedelta(hours=3)).isoformat(),
+                        },
+                    }
+                }
+            }
+        }
+        due,_=gate.gefs_supplemental_due(payload,RUN,RUN+timedelta(hours=2,minutes=59))
+        self.assertFalse(due)
+        due,state=gate.gefs_supplemental_due(payload,RUN,RUN+timedelta(hours=3))
+        self.assertTrue(due)
+        self.assertEqual(state["attempts"],0)
+        payload["full_horizon_archive"]["sources"]["GEFS-control"]["gefs_pgrb2b_supplemental_retry"]["attempts"]=1
+        due,_=gate.gefs_supplemental_due(payload,RUN,RUN+timedelta(hours=6))
+        self.assertFalse(due)
 
     def test_prepare_seed_resets_attempts_and_persists_gate(self):
         _latest,payload=self.seed()
