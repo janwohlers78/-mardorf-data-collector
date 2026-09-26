@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from audit_integrity import audit_models,audit_svg,audit_skm,audit_eps_hourly_source,full_horizon_coverage_issue
 from check_collection_due import evaluate_latest_success
@@ -140,6 +141,76 @@ class IntegrityAuditTests(unittest.TestCase):
             r=audit_models(p,POLICY,now)
         self.assertEqual(r["error_count"],0,r["issues"])
         self.assertTrue(r["bundle_ready_for_private_revalidation"])
+
+    def _aged_gefs_with_mature_selection_evidence(self,now,newer_status="not_published"):
+        d=self.model_bundle()
+        selected=(now-timedelta(hours=13)).replace(minute=0,second=0,microsecond=0)
+        for rec in d["models"]["GEFS-control"]:
+            lead=int(rec["forecast_lead_hours"])
+            rec["run_time_utc"]=selected.isoformat()
+            rec["valid_time_utc"]=(selected+timedelta(hours=lead)).isoformat()
+        from full_horizon_contract import maximum_hours
+        attempts=[]
+        cycle=selected+timedelta(hours=6)
+        while cycle<=now:
+            terminal=maximum_hours("GEFS-control",cycle)
+            attempts.append({
+                "cycle_run_time_utc":cycle.isoformat(),
+                "expected_max_lead_for_cycle":terminal,
+                "publication_probe_lead":terminal,
+                "status":newer_status,
+                "http_status":200,
+                "response_bytes":8,
+                "grib_magic":False,
+            })
+            cycle+=timedelta(hours=6)
+        selected_terminal=maximum_hours("GEFS-control",selected)
+        attempts.append({
+            "cycle_run_time_utc":selected.isoformat(),
+            "expected_max_lead_for_cycle":selected_terminal,
+            "publication_probe_lead":selected_terminal,
+            "status":"published",
+            "http_status":200,
+            "response_bytes":8,
+            "grib_magic":True,
+        })
+        d["provider_selection_evidence"]={"GEFS-control":{
+            "method_version":"gefs-newest-mature-cycle-selection-v1",
+            "full_horizon_publication_required":True,
+            "required_base_lead":48,
+            "selection_checked_at_utc":now.isoformat(),
+            "selected_cycle_run_time_utc":selected.isoformat(),
+            "selected_expected_max_lead_hours":selected_terminal,
+            "selected_publication_probe_lead":selected_terminal,
+            "attempts":attempts,
+        }}
+        return d,selected
+
+    def test_gefs_newest_mature_cycle_age_excess_is_warning_not_current(self):
+        now=datetime.now(timezone.utc)
+        d,selected=self._aged_gefs_with_mature_selection_evidence(now)
+        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ",{"FULL_VALIDATION":"true"}):
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        self.assertFalse(any(x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY" and x["source"]=="GEFS-control" for x in r["issues"]),r["issues"])
+        warnings=[x for x in r["issues"] if x["code"]=="GEFS_NEWEST_MATURE_CYCLE_EXCEEDS_NOMINAL_CURRENTNESS"]
+        self.assertEqual(len(warnings),1,r["issues"])
+        src=r["sources"]["GEFS-control"]
+        self.assertTrue(src["gefs_mature_archive_exception_applied"])
+        self.assertFalse(src["currentness_policy_pass"])
+        self.assertEqual(src["selected_run_time_utc"],selected.isoformat())
+        self.assertEqual(r["error_count"],0,r["issues"])
+        self.assertTrue(r["bundle_ready_for_private_revalidation"])
+
+    def test_gefs_mature_cycle_exception_rejects_unproven_newer_cycle(self):
+        now=datetime.now(timezone.utc)
+        d,_=self._aged_gefs_with_mature_selection_evidence(now,newer_status="request_error")
+        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ",{"FULL_VALIDATION":"true"}):
+            p=Path(td)/"m.json";p.write_text(json.dumps(d))
+            r=audit_models(p,POLICY,now)
+        errors=[x for x in r["issues"] if x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY" and x["source"]=="GEFS-control"]
+        self.assertEqual(len(errors),1,r["issues"])
+        self.assertFalse(r["sources"]["GEFS-control"]["gefs_mature_archive_exception_applied"])
 
     def test_missing_model_lead_is_exact(self):
         now=datetime.now(timezone.utc);d=self.model_bundle()
