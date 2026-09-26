@@ -58,6 +58,19 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("--kind models --max-age-minutes 150",s)
         self.assertIn("inputs.watchdog != true",s)
 
+    def test_model_provider_cycle_gate_suppresses_repeat_downloads_and_transfer(self):
+        s=self.text("collect-models.yml")
+        self.assertIn("Plan provider-specific archived-cycle delta",s)
+        self.assertIn("python src/provider_cycle_gate.py",s)
+        self.assertIn("steps.cycle_gate.outputs.any_work == 'true'",s)
+        self.assertIn("steps.cycle_gate.outputs.icon_d2 != 'carry_forward'",s)
+        self.assertIn("steps.cycle_gate.outputs.gfs != 'carry_forward'",s)
+        self.assertIn("steps.cycle_gate.outputs.gefs_control != 'carry_forward'",s)
+        self.assertIn("steps.cycle_gate.outputs.icon_eu != 'carry_forward'",s)
+        self.assertIn("steps.cycle_gate.outputs.icon_d2_eps != 'carry_forward'",s)
+        self.assertIn("steps.cycle_gate.outputs.ecmwf_ifs != 'carry_forward'",s)
+        self.assertIn("Private transfer/promotion: suppressed.",s)
+
     def test_secondary_watchdog_is_freshness_gated(self):
         s=self.text("collect-secondary.yml")
         self.assertIn("watchdog:",s)
