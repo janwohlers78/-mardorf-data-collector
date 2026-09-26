@@ -27,6 +27,7 @@ from pathlib import Path
 import fetch_model_data as base
 import fetch_extra_models as extra
 import fetch_dwd_additional_models as dwd
+from full_horizon_contract import maximum_hours
 
 API="https://api.github.com"
 DEFAULT_REPO="janwohlers78/mardorf-kitevorhersage"
@@ -109,14 +110,48 @@ def exact_archived_cycle(repo,token,model,run):
     return item
 
 
-def _ecmwf_cycle():
-    """Lightweight ECMWF probe: one 10u f48 field, not the full model payload."""
+def _ecmwf_probe(client,target,run=None,step=48):
+    kwargs={}
+    if run is not None:
+        kwargs.update(date=run.strftime("%Y%m%d"),time=run.hour)
+    client.retrieve(
+        stream="oper",type="fc",step=[int(step)],param=["10u"],
+        target=str(target),**kwargs)
+    actual=extra.grib_run_time(target)
+    if run is not None and actual!=run:
+        raise RuntimeError(
+            f"ECMWF probe returned wrong cycle: requested={run.isoformat()} actual={actual.isoformat()}")
+    return actual
+
+
+def _ecmwf_cycle(full_validation=True):
+    """Probe the newest ECMWF cycle mature enough for this collection mode."""
     source=os.getenv("ECMWF_OPEN_DATA_SOURCE","azure")
     with tempfile.TemporaryDirectory() as td:
-        target=Path(td)/"ifs_cycle_probe.grib2"
+        root=Path(td)
         client=extra.Client(source=source,model="ifs",resol="0p25",maximum_retries=2,retry_after=5)
-        client.retrieve(stream="oper",type="fc",step=[48],param=["10u"],target=str(target))
-        return extra.grib_run_time(target)
+        latest=_ecmwf_probe(client,root/"latest_f048.grib2",step=48)
+        if not full_validation:
+            return latest
+        candidate=latest
+        failures=[]
+        for idx in range(8):
+            terminal=maximum_hours("ECMWF-IFS",candidate)
+            try:
+                _ecmwf_probe(
+                    client,root/f"candidate_{idx}_{terminal}.grib2",
+                    run=candidate,step=terminal)
+                return candidate
+            except Exception as exc:
+                failures.append({
+                    "run_time_utc":candidate.isoformat(),
+                    "terminal_lead_hours":terminal,
+                    "exception_type":type(exc).__name__,
+                    "exception_message":str(exc)[:300],
+                })
+                from datetime import timedelta
+                candidate=candidate-timedelta(hours=6)
+        raise RuntimeError(f"No mature ECMWF cycle found from latest={latest.isoformat()}; failures={failures}")
 
 
 def discover(model,full_validation=True):
@@ -146,7 +181,7 @@ def discover(model,full_validation=True):
         dwd.find_dwd_file("icon-d2-eps",run.strftime("%Y%m%d%H"),48,"u_10m")
         return run
     if model=="ECMWF-IFS":
-        return _ecmwf_cycle()
+        return _ecmwf_cycle(full_validation)
     raise ValueError(model)
 
 
