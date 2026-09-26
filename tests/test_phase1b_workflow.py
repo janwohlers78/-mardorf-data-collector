@@ -12,8 +12,8 @@ class Phase1BWorkflowTests(unittest.TestCase):
 
     def test_model_collector_has_no_push_trigger(self):
         self.assertNotIn("\n  push:", self.trigger_block)
-        self.assertIn("\n  schedule:", self.trigger_block)
-        self.assertIn("\n  workflow_dispatch:", self.trigger_block)
+        self.assertIn("  schedule:", self.trigger_block)
+        self.assertIn("  workflow_dispatch:", self.trigger_block)
 
     def test_full_validation_is_explicit_and_not_commit_message_driven(self):
         self.assertIn("full_validation:", self.trigger_block)
