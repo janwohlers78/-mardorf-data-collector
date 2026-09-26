@@ -45,12 +45,21 @@ def step_end(step_range):
  if value is None or abs(value-round(value))>1e-9:return None
  return int(round(value))
 
-def fetch_ifs(leads):
+def fetch_ifs(leads,run_time=None):
  out=[]
+ planned=None
+ if run_time is not None:
+  planned=run_time if isinstance(run_time,datetime) else datetime.fromisoformat(str(run_time).replace('Z','+00:00'))
+  planned=planned.astimezone(timezone.utc) if planned.tzinfo else planned.replace(tzinfo=timezone.utc)
  with tempfile.TemporaryDirectory() as td:
   target=Path(td)/'ifs_batch.grib2'; client=Client(source=ECMWF_SOURCE,model='ifs',resol='0p25')
-  client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target))
-  run=grib_run_time(target); assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}; rows=nearest(target);point=rows.point
+  kwargs={}
+  if planned is not None: kwargs.update(date=planned.strftime('%Y%m%d'),time=planned.hour)
+  client.retrieve(stream='oper',type='fc',step=leads,param=ECMWF_PARAMS,target=str(target),**kwargs)
+  run=grib_run_time(target)
+  if planned is not None and run!=planned:
+   raise RuntimeError(f'ECMWF run identity mismatch: planned {planned.isoformat()} got {run.isoformat()}')
+  assert_grib_batch_leads(target,run,leads,'ECMWF-IFS base batch'); bylead={int(x):{} for x in leads}; rows=nearest(target);point=rows.point
   for n,s,v in rows:
    lead=step_end(s)
    if lead in bylead:bylead[lead].setdefault(n,[]).append({'stepRange':s,'value':v})

@@ -98,11 +98,17 @@ def fetch_field(provider_model,cycle,lead,param,url,run,valid):
         return stable,diagnostic,url
 
 
-def attach(snapshot,workers=4):
+def attach(snapshot,workers=4,models=None):
     started=datetime.now(timezone.utc)
+    selected=set(models or MODEL_MAP)
+    unknown=selected-set(MODEL_MAP)
+    if unknown:
+        raise ValueError(f"unsupported Tier-A models: {sorted(unknown)}")
     jobs=[]
     inventories={}
     for model,provider_model in MODEL_MAP.items():
+        if model not in selected:
+            continue
         rows=snapshot.get("models",{}).get(model,[])
         cycles=sorted({utc(r["run_time_utc"]).strftime("%Y%m%d%H") for r in rows if r.get("run_time_utc")})
         if len(cycles)!=1:
@@ -140,6 +146,8 @@ def attach(snapshot,workers=4):
 
     by_model={}
     for model in MODEL_MAP:
+        if model not in selected:
+            continue
         rows=[x for x in diagnostics if x["model"]==model]
         by_parameter={}
         for parameter in TIER_A:
@@ -164,6 +172,8 @@ def attach(snapshot,workers=4):
     # acquisition. The revision becomes visible only now; native fields keep
     # their own earlier field_available_at_utc when the response succeeded.
     for model in MODEL_MAP:
+        if model not in selected:
+            continue
         availability.stamp_rows(
             snapshot.get("models",{}).get(model,[]),
             observed_at=completed.isoformat(),
@@ -192,10 +202,11 @@ def attach(snapshot,workers=4):
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--workers",type=int,default=4)
+    ap.add_argument("--models",nargs="+",choices=sorted(MODEL_MAP))
     args=ap.parse_args()
     if not SNAP.exists(): raise SystemExit(f"snapshot missing: {SNAP}")
     snapshot=json.loads(SNAP.read_text(encoding="utf-8"))
-    summary=attach(snapshot,args.workers)
+    summary=attach(snapshot,args.workers,args.models)
     SNAP.write_text(json.dumps(snapshot,separators=(",",":"),allow_nan=False)+"\n",encoding="utf-8")
     print(json.dumps({
         "method_version":summary["method_version"],
