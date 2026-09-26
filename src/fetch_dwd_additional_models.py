@@ -338,7 +338,7 @@ def _hourly_source(payload,r,meta_before,meta_after,identity,base,response_retri
         'run_time_utc':base.isoformat(),
         'times_utc':times,
         'columns':columns,
-        'member_identity':'provider_member_number_in_one_response_control_is_zero',
+        'member_identity':'provider_member_number_in_one_response_zero_is_ensemble_member_not_control',
         'dwd_cycle_confirmation_url':identity['dwd_cycle_confirmation_url'],
         'source_run_identity':identity,
         'semantics':{
