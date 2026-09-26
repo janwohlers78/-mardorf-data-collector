@@ -141,6 +141,18 @@ class IntegrityAuditTests(unittest.TestCase):
             r=audit_models(p,POLICY,now)
         self.assertEqual(r["error_count"],0,r["issues"])
         self.assertTrue(r["bundle_ready_for_private_revalidation"])
+        self.assertTrue(any(x["code"]=="FULL_HORIZON_ARCHIVE_MISSING" and x["severity"]=="WARN" for x in r["issues"]),r["issues"])
+
+    def test_full_validation_rejects_missing_full_horizon_block(self):
+        now=datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ",{"FULL_VALIDATION":"true"}):
+            p=Path(td)/"m.json";p.write_text(json.dumps(self.model_bundle()))
+            r=audit_models(p,POLICY,now)
+        self.assertTrue(any(
+            x["code"]=="FULL_HORIZON_REQUIRED_COVERAGE_INCOMPLETE" and x["severity"]=="ERROR"
+            for x in r["issues"]
+        ),r["issues"])
+        self.assertFalse(r["bundle_ready_for_private_revalidation"])
 
     def _aged_gefs_with_mature_selection_evidence(self,now,newer_status="not_published"):
         d=self.model_bundle()
@@ -189,7 +201,7 @@ class IntegrityAuditTests(unittest.TestCase):
     def test_gefs_newest_mature_cycle_age_excess_is_warning_not_current(self):
         now=datetime.now(timezone.utc)
         d,selected=self._aged_gefs_with_mature_selection_evidence(now)
-        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ",{"FULL_VALIDATION":"true"}):
+        with tempfile.TemporaryDirectory() as td:
             p=Path(td)/"m.json";p.write_text(json.dumps(d))
             r=audit_models(p,POLICY,now)
         self.assertFalse(any(x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY" and x["source"]=="GEFS-control" for x in r["issues"]),r["issues"])
@@ -205,7 +217,7 @@ class IntegrityAuditTests(unittest.TestCase):
     def test_gefs_mature_cycle_exception_rejects_unproven_newer_cycle(self):
         now=datetime.now(timezone.utc)
         d,_=self._aged_gefs_with_mature_selection_evidence(now,newer_status="request_error")
-        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ",{"FULL_VALIDATION":"true"}):
+        with tempfile.TemporaryDirectory() as td:
             p=Path(td)/"m.json";p.write_text(json.dumps(d))
             r=audit_models(p,POLICY,now)
         errors=[x for x in r["issues"] if x["code"]=="MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY" and x["source"]=="GEFS-control"]
