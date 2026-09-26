@@ -43,3 +43,4 @@ jobs:
             work/archive_v3_probe/all_acquired_weather_values.parquet
           if-no-files-found: error
           retention-days: 7
+# rerun after corrected CAPE expectation
