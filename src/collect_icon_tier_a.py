@@ -136,6 +136,15 @@ def attach(snapshot,workers=4):
     by_model={}
     for model in MODEL_MAP:
         rows=[x for x in diagnostics if x["model"]==model]
+        by_parameter={}
+        for parameter in TIER_A:
+            subset=[x for x in rows if x["parameter"]==parameter]
+            by_parameter[parameter]={
+                "requested_fields":len(subset),
+                "received_fields":sum(x["status"]=="received" for x in subset),
+                "missing_fields":sum(x["status"]!="received" for x in subset),
+                "response_bytes":sum(int(x.get("response_bytes",0)) for x in subset),
+            }
         by_model[model]={
             "requested_fields":len(rows),
             "received_fields":sum(x["status"]=="received" for x in rows),
@@ -143,6 +152,7 @@ def attach(snapshot,workers=4):
             "response_bytes":sum(int(x.get("response_bytes",0)) for x in rows),
             "elapsed_field_seconds_sum":round(sum(float(x.get("elapsed_seconds",0)) for x in rows),3),
             "status_counts":{s:sum(x["status"]==s for x in rows) for s in sorted({x["status"] for x in rows})},
+            "by_parameter":by_parameter,
         }
     completed=datetime.now(timezone.utc)
     summary={
