@@ -128,7 +128,12 @@ if not {"0","18000","9000","25500"} <= {x[1] for x in far_checks["gfs_384_cape"]
     raise SystemExit(f"GFS f384 CAPE layers lost: {far_checks['gfs_384_cape']}")
 if far_checks["gefs_246_tcc"]!=[("avg","240-246","%")]:
     raise SystemExit(f"GEFS f246 TCDC mismatch: {far_checks['gefs_246_tcc']}")
-if far_checks["gefs_246_cape"]!=[("pressureFromGroundLayer","18000","instant","J kg**-1")]:
+expected_gefs_246_cape={
+    ("pressureFromGroundLayer","18000","instant","J kg**-1"),
+    ("surface","0","instant","J kg**-1"),
+    ("pressureFromGroundLayer","25500","instant","J kg**-1"),
+}
+if set(map(tuple,far_checks["gefs_246_cape"])) != expected_gefs_246_cape:
     raise SystemExit(f"GEFS f246 CAPE mismatch: {far_checks['gefs_246_cape']}")
 if far_checks["gefs_246_dpt"] < 1 or far_checks["gefs_384_dpt"] < 1:
     raise SystemExit(f"GEFS far-range DPT missing after pgrb2b repair: {far_checks}")
