@@ -152,7 +152,7 @@ def fetch_gefs(leads,return_selection_evidence=False):
     for n in ns:
      if n in vals and vals[n]: return vals[n][0]['value']
    u=one('10u','u'); v=one('10v','v'); g=one('gust','10fg')
-   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{'gefs_0p25s':noaa.weather_availability('gefs_0p25s',vals)},'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature),'selection_evidence_method_version':selection_evidence['method_version']}}
+   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':'gefs_0p25s','source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{'gefs_0p25s':noaa.weather_availability('gefs_0p25s',vals)},'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature),'selection_evidence_method_version':selection_evidence['method_version']}}
    if u is not None and v is not None: rec['derived']=derived(u,v,g)
    out.append(rec)
  return (out,selection_evidence) if return_selection_evidence else out
