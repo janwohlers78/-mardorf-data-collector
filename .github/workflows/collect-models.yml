@@ -94,7 +94,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch ICON-D2 base horizon
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2 != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2 == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -110,7 +110,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch GFS base horizon
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gfs != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gfs == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -126,7 +126,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch GEFS-control base horizon
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gefs_control != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gefs_control == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -142,7 +142,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ICON-EU base horizon
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_eu != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_eu == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -158,7 +158,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ICON-D2-EPS base horizon
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2_eps != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2_eps == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -174,7 +174,7 @@ jobs:
           exit "$rc"
 
       - name: Fetch ECMWF-IFS base horizon with mirror fallback
-        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.ecmwf_ifs != 'carry_forward')
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true') && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.ecmwf_ifs == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -196,7 +196,7 @@ jobs:
           exit "$last"
 
       - name: Extend GFS to cycle horizon
-        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gfs != 'carry_forward')
+        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gfs == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -210,7 +210,7 @@ jobs:
           exit "$rc"
 
       - name: Extend GEFS-control to cycle horizon
-        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gefs_control != 'carry_forward')
+        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.gefs_control == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -224,7 +224,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ICON-EU to cycle horizon
-        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_eu != 'carry_forward')
+        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_eu == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -238,7 +238,7 @@ jobs:
           exit "$rc"
 
       - name: Extend ECMWF-IFS to cycle horizon with mirror fallback
-        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.ecmwf_ifs != 'carry_forward')
+        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && inputs.test_mode != true && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.ecmwf_ifs == 'fetch')
         continue-on-error: true
         shell: bash
         run: |
@@ -258,7 +258,7 @@ jobs:
           exit "$last"
 
       - name: Attach ICON Tier-A weather context
-        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2 != 'carry_forward' || steps.cycle_gate.outputs.icon_eu != 'carry_forward')
+        if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || (steps.due.outputs.due == 'true' && steps.cycle_gate.outputs.any_work == 'true')) && (github.event_name == 'workflow_dispatch' && inputs.watchdog != true || steps.cycle_gate.outputs.icon_d2 == 'fetch' || steps.cycle_gate.outputs.icon_eu == 'fetch')
         continue-on-error: true
         shell: bash
         run: |

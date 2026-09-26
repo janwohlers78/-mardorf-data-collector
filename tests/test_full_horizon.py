@@ -197,6 +197,59 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(row["provider_product"], "gefs_0p50a")
         self.assertEqual(row["optional_product_errors"][0]["product"], "gefs_0p50b")
 
+    def test_gefs_pgrb2b_supplement_does_not_download_0p50a(self):
+        run=datetime(2026,9,25,0,tzinfo=timezone.utc)
+        record={
+            "model":"GEFS-control",
+            "run_time_utc":run.isoformat(),
+            "forecast_lead_hours":264,
+            "valid_time_utc":(run+timedelta(hours=264)).isoformat(),
+            "provider_product":"gefs_0p50a",
+            "forecast_coordinate_or_grid_point":{"latitude":52.5,"longitude":9.25},
+            "values":{"10u":[{"value":3.0}],"10v":[{"value":4.0}]},
+            "grib_evidence":[{"product":"gefs_0p50a","url":"a-url","sha256":"a"*64,"response_bytes":10}],
+            "source_urls":["a-url"],
+            "optional_product_errors":[{"product":"gefs_0p50b","url":"b-url","reason":"not yet"}],
+            "weather_context_availability":{},
+            "derived":{"wind_speed_ms":5.0},
+        }
+        requests=[
+            ("gefs_0p50a","a-url",True),
+            ("gefs_0p50b","b-url",False),
+        ]
+        b_values={"2d":[{"shortName":"2d","value":281.0,"source_sha256":"b"*64}]}
+        point={"latitude":52.5,"longitude":9.25}
+        with patch.object(fetch,"noaa_requests",return_value=requests), \
+             patch.object(fetch,"_download",return_value=b"GRIB-test") as download, \
+             patch.object(fetch.ext,"assert_grib_valid_time"), \
+             patch.object(fetch.noaa,"extract_native_values",return_value=(b_values,point)), \
+             patch.object(fetch.noaa,"weather_availability",return_value={"dewpoint_2m":"received"}), \
+             patch.object(fetch.availability,"stamp_rows"):
+            updated=fetch.retry_gefs_pgrb2b(record,run)
+        self.assertEqual(download.call_count,1)
+        self.assertEqual(download.call_args.args[1],"b-url")
+        self.assertEqual(updated["provider_product"],"gefs_0p50a+gefs_0p50b")
+        self.assertEqual(updated["optional_product_errors"],[])
+        self.assertEqual(updated["values"]["2d"][0]["value"],281.0)
+
+    def test_gefs_pgrb2b_retry_is_delayed_once_then_exhausted(self):
+        source={
+            "records":[{
+                "forecast_lead_hours":264,
+                "optional_product_errors":[{"product":"gefs_0p50b"}],
+            }]
+        }
+        fetch.update_pgrb2b_retry_state(source,"fetch")
+        state=source["gefs_pgrb2b_supplemental_retry"]
+        self.assertEqual(state["status"],"pending")
+        self.assertEqual(state["attempts"],0)
+        self.assertIsNotNone(state["next_retry_not_before_utc"])
+        fetch.update_pgrb2b_retry_state(source,"supplemental_retry",[{"lead_hours":264,"status":"fetch_error"}])
+        state=source["gefs_pgrb2b_supplemental_retry"]
+        self.assertEqual(state["status"],"exhausted")
+        self.assertEqual(state["attempts"],1)
+        self.assertIsNone(state["next_retry_not_before_utc"])
+
     def collect(self, fail=False, hour=0):
         d = payload(hour)
         original = copy.deepcopy(d)

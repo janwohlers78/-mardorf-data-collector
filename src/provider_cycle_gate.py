@@ -21,7 +21,7 @@ import os
 import tempfile
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import fetch_model_data as base
@@ -149,7 +149,6 @@ def _ecmwf_cycle(full_validation=True):
                     "exception_type":type(exc).__name__,
                     "exception_message":str(exc)[:300],
                 })
-                from datetime import timedelta
                 candidate=candidate-timedelta(hours=6)
         raise RuntimeError(f"No mature ECMWF cycle found from latest={latest.isoformat()}; failures={failures}")
 
@@ -183,6 +182,24 @@ def discover(model,full_validation=True):
     if model=="ECMWF-IFS":
         return _ecmwf_cycle(full_validation)
     raise ValueError(model)
+
+
+def gefs_supplemental_due(payload,run,checked_at):
+    archive=payload.get("full_horizon_archive") if isinstance(payload.get("full_horizon_archive"),dict) else {}
+    sources=archive.get("sources") if isinstance(archive.get("sources"),dict) else {}
+    source=sources.get("GEFS-control")
+    if not isinstance(source,dict) or source.get("run_time_utc")!=run.isoformat():
+        return False,None
+    state=source.get("gefs_pgrb2b_supplemental_retry")
+    if not isinstance(state,dict) or state.get("status")!="pending":
+        return False,state
+    try:
+        attempts=int(state.get("attempts",0))
+        maximum=int(state.get("maximum_attempts",1))
+        due=utc(state.get("next_retry_not_before_utc"))
+    except Exception:
+        return False,state
+    return attempts<maximum and checked_at>=due,state
 
 
 def rows_match_cycle(payload,model,run):
@@ -250,7 +267,18 @@ def build_plan(repo,token,full_validation=True,discover_fn=discover):
                 seed_payload_rows_match=bool(rows_ok),
             )
             if archived and source_ok and rows_ok:
-                entry.update(action="carry_forward",reason="selected_cycle_already_archived")
+                supplement_due,supplement_state=(
+                    gefs_supplemental_due(seed,run,checked)
+                    if model=="GEFS-control" else (False,None)
+                )
+                if supplement_due:
+                    entry.update(
+                        action="supplemental_retry",
+                        reason="archived_cycle_has_due_bounded_pgrb2b_retry",
+                        supplemental_retry_state=supplement_state,
+                    )
+                else:
+                    entry.update(action="carry_forward",reason="selected_cycle_already_archived")
             else:
                 missing=[]
                 if not archived: missing.append("private_cycle_evidence")
