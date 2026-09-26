@@ -215,6 +215,18 @@ def main():
             "received_count": m["received_count"],
             "missing_count": m["missing_count"],
             "missing_parameters": m["missing_parameters"],
+            "response_bytes": sum(f.get("response_bytes", 0) for f in m["fields"]),
+            "fields": [{
+                "parameter": f["parameter_native"],
+                "status": f["status"],
+                "response_bytes": f.get("response_bytes"),
+                "units": (f.get("values") or [{}])[0].get("units"),
+                "stepType": (f.get("values") or [{}])[0].get("stepType"),
+                "stepRange": (f.get("values") or [{}])[0].get("stepRange"),
+                "typeOfLevel": (f.get("values") or [{}])[0].get("typeOfLevel"),
+                "level": (f.get("values") or [{}])[0].get("level"),
+                "value": (f.get("values") or [{}])[0].get("value"),
+            } for f in m["fields"]],
         } for m in result["models"]],
         "output": str(out),
     }, indent=2))
