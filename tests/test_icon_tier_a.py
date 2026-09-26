@@ -90,6 +90,16 @@ class IconTierARoutineTests(unittest.TestCase):
                 self.assertEqual(set(t.TIER_A),set(r["values"]))
                 self.assertEqual(r["derived"]["wind_speed_ms"],5.0)
 
+    def test_icon_eu_wind_fetchers_do_not_duplicate_tier_a_fields(self):
+        from pathlib import Path
+        root=Path(__file__).resolve().parents[1]
+        base_text=(root/"src/fetch_dwd_additional_models.py").read_text()
+        ext_text=(root/"src/extend_model_horizon.py").read_text()
+        for parameter in ("tot_prec","cape_ml","cin_ml","clct"):
+            self.assertNotIn(f"'vmax_10m','{parameter}'",base_text)
+        self.assertIn("params=['u_10m','v_10m','vmax_10m']",base_text)
+        self.assertIn("for param in ['u_10m','v_10m','vmax_10m']:",ext_text)
+
     def test_tier_a_contract_is_exactly_four_fields(self):
         self.assertEqual(t.TIER_A,("tot_prec","cape_ml","cin_ml","clct"))
 
