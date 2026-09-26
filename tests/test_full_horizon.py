@@ -184,6 +184,22 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(summary["horizon_status"], "complete")
         self.assertEqual(summary["status"], "partial")
 
+    def test_optional_gefs_gust_gap_does_not_fail_archive_exit_code(self):
+        d, _ = self.collect()
+        source = d["full_horizon_archive"]["sources"]["GEFS-control"]
+        row = next(r for r in source["records"] if r["forecast_lead_hours"] > 240)
+        row["derived"].pop("gust_ms")
+        row["field_availability"] = {"wind_uv": True, "gust": False}
+        summary = c.validate_archive(d)
+        self.assertEqual(summary["status"], "partial")
+        self.assertEqual(summary["horizon_status"], "complete")
+        self.assertEqual(fetch.archive_exit_code(summary), 0)
+
+    def test_missing_required_horizon_still_fails_archive_exit_code(self):
+        _, summary = self.collect(True)
+        self.assertNotEqual(summary["horizon_status"], "complete")
+        self.assertEqual(fetch.archive_exit_code(summary), 1)
+
     def test_far_gefs_missing_gust_without_marker_is_rejected(self):
         d, _ = self.collect()
         source = d["full_horizon_archive"]["sources"]["GEFS-control"]
