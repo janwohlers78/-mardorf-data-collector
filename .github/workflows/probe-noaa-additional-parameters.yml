@@ -1,0 +1,51 @@
+name: Phase 2c NOAA bounded parameter probe
+
+on:
+  push:
+    branches:
+      - phase2c-noaa-parameter-probe
+    paths:
+      - src/probe_noaa_additional_parameters.py
+      - .github/workflows/probe-noaa-additional-parameters.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2c-noaa-parameter-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.repository == 'janwohlers78/mardorf-data-collector'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools
+          grib_ls -V
+
+      - name: Validate probe construction
+        run: python3 src/probe_noaa_additional_parameters.py --self-test
+
+      - name: Run bounded live probe
+        run: |
+          python3 src/probe_noaa_additional_parameters.py
+          cat work/noaa_additional_parameter_probe.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload isolated probe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2c-noaa-parameter-probe
+          path: |
+            work/noaa_additional_parameter_probe.json
+            work/noaa_additional_parameter_probe.md
+          if-no-files-found: error
+          retention-days: 7
