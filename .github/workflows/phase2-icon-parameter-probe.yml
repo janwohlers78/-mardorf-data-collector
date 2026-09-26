@@ -1,0 +1,60 @@
+name: Phase 2 ICON parameter live probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/icon_parameter_probe.py'
+      - 'tests/test_icon_parameter_probe.py'
+      - '.github/workflows/phase2-icon-parameter-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-runtime.txt
+      - name: Run bounded +12 h ICON parameter probe
+        run: python src/icon_parameter_probe.py --lead 12 --output work/icon_parameter_probe.json
+      - name: Publish probe summary
+        if: always()
+        run: |
+          if [ -f work/icon_parameter_probe.json ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d=json.load(open("work/icon_parameter_probe.json"))
+          print("## Phase 2 ICON parameter probe")
+          print()
+          print(f"- Lead: +12 h")
+          print(f"- Total response bytes: {d['total_response_bytes']}")
+          for m in d["models"]:
+              print(f"- {m['model']} cycle {m['cycle']}: {m['received_count']}/11 received; missing={m['missing_parameters']}")
+              for f in m["fields"]:
+                  if f["status"]=="received":
+                      v=f["values"][0]
+                      print(f"  - {f['parameter_native']}: {v.get('value')} {v.get('units')} stepType={v.get('stepType')} stepRange={v.get('stepRange')} level={v.get('typeOfLevel')}:{v.get('level')}")
+                  else:
+                      print(f"  - {f['parameter_native']}: {f['status']} {f.get('error_type')} {f.get('error_message','')[:160]}")
+          PY
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase2-icon-parameter-probe
+          path: work/icon_parameter_probe.json
+          if-no-files-found: ignore
