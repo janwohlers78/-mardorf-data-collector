@@ -14,6 +14,7 @@ import requests
 from ecmwf.opendata import Client
 from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 import noaa_weather_context as noaa
+from full_horizon_contract import acquisition_leads, compatibility_hours, maximum_hours
 
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
@@ -54,14 +55,14 @@ def cycle_from_existing(data,model):
     return datetime.fromisoformat(next(iter(runs))).astimezone(timezone.utc)
 
 def cycle_horizon(model,base):
-    if model in ('ICON-D2','ICON-D2-EPS'): return 48
-    if model=='ICON-EU': return 120 if base.hour in (0,6,12,18) else 51
-    if model=='ECMWF-IFS': return 120 if base.hour in (0,12) else 90
-    return 120
+    # Compatibility horizon: this stage feeds the legacy/current JSON model
+    # snapshot only. Provider-native horizon is separately handled by the
+    # full-horizon archive using Acquisition Grid v2.
+    return compatibility_hours(model,base)
 
 def leads_for_cycle(model,base):
-    limit=cycle_horizon(model,base)
-    return [lead for lead in TARGET_LEADS if lead<=limit]
+    limit=compatibility_hours(model,base)
+    return [lead for lead in acquisition_leads(model,base) if 48 < lead <= limit]
 
 def grib_run_time(path):
     observed=grib_run_times(path)
@@ -171,9 +172,8 @@ def fetch_icon_eu(data):
 def expected_leads(model,recs):
     if not recs:return []
     base=datetime.fromisoformat(recs[0]['run_time_utc']).astimezone(timezone.utc)
-    horizon=cycle_horizon(model,base)
-    if horizon<=48:return list(range(0,horizon+1,3))
-    return list(range(0,min(72,horizon)+1,3))+list(range(78,horizon+1,6))
+    horizon=compatibility_hours(model,base)
+    return [h for h in acquisition_leads(model,base) if h <= horizon]
 
 
 def quality(data):
