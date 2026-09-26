@@ -1,0 +1,45 @@
+name: Phase 2c NOAA final Archive-v3 proof
+
+on:
+  push:
+    branches:
+      - phase2c-noaa-final-canary
+    paths:
+      - .github/workflows/phase2c-noaa-final-storage-proof.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  storage-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install exact Archive-v3 dependencies
+        run: 'python -m pip install --disable-pip-version-check pyarrow==25.0.1 duckdb==1.5.5'
+      - name: Download final live NOAA canary payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p work/canary
+          gh run download 36243288938 --repo janwohlers78/mardorf-data-collector --name phase2c-noaa-final-live-canary --dir work/canary
+          test -s work/canary/model_snapshot.json
+      - name: Run exact private Archive-v3 writer proof
+        run: python storage_probe/run_archive_probe.py
+      - name: Upload final storage proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2c-noaa-final-archive-v3-proof
+          path: |
+            work/noaa_archive_v3_storage_proof.json
+            work/archive_v3_probe/data/weather_archive
+            work/archive_v3_probe/all_acquired_weather_values.parquet
+          if-no-files-found: error
+          retention-days: 7
