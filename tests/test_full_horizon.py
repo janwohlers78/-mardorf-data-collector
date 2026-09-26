@@ -114,6 +114,7 @@ class HorizonTests(unittest.TestCase):
         self.assertIn("var_CAPE=on", queries[1][1])
         self.assertIn("var_CIN=on", queries[1][1])
         self.assertNotIn("var_GUST=on", queries[1][1])
+        self.assertNotIn("lev_10_m_above_ground=on", queries[1][1])
         self.assertTrue(queries[0][2])
         self.assertFalse(queries[1][2])
         near = parse_qs(urlparse(fetch.noaa_requests("GEFS-control", run, 240)[0][1]).query)
