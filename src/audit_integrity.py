@@ -612,12 +612,12 @@ def audit_models(path,cfg,now):
             "The private forecast must not treat this acquisition as sufficient multi-family evidence.",
             complete_current_families=complete_current_families,required_count=2,observed_count=len(complete_current_families)))
     archive_summary = None
+    full_validation = os.getenv("FULL_VALIDATION", "").lower() == "true"
     if "full_horizon_archive" in d:
         from full_horizon_contract import validate_archive
         try:
             archive_summary = validate_archive(d)
-            coverage_issue = full_horizon_coverage_issue(
-                archive_summary, os.getenv("FULL_VALIDATION", "").lower() == "true")
+            coverage_issue = full_horizon_coverage_issue(archive_summary, full_validation)
             if coverage_issue:
                 code, severity, impact = coverage_issue
                 issues.append(issue(code, severity, "archive", "coverage", impact, coverage=archive_summary))
@@ -625,6 +625,23 @@ def audit_models(path,cfg,now):
             issues.append(issue("FULL_HORIZON_ARCHIVE_INVALID", "ERROR", "archive", "integrity",
                 "Archive identities failed revalidation.", reason=str(exc)))
             usable = False
+    else:
+        archive_summary = {
+            "status": "absent",
+            "horizon_status": "absent",
+            "sources": {},
+        }
+        coverage_issue = full_horizon_coverage_issue(archive_summary, full_validation)
+        if coverage_issue:
+            code, severity, impact = coverage_issue
+            issues.append(issue(
+                "FULL_HORIZON_ARCHIVE_MISSING" if not full_validation else code,
+                severity,
+                "archive","coverage",
+                "Full-horizon archive block is absent. Core/current forecast data may still be usable, "
+                "but Phase-2 native-horizon storage is incomplete." if not full_validation else impact,
+                coverage=archive_summary,
+            ))
     return make_report("models",now,sources,issues,usable,{
         "input_file_present":True,"collector_mode":mode,"full_horizon_archive":archive_summary,
         "retrieved_at_utc":retrieval.isoformat() if retrieval else None,
