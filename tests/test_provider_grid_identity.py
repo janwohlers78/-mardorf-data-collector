@@ -34,7 +34,11 @@ class ProviderGridIdentityTests(unittest.TestCase):
         with patch.object(extra,"discover_gefs",return_value=("2026092006",evidence)), \
              patch.object(extra.S,"get",return_value=FakeResponse()), \
              patch.object(extra,"assert_grib_valid_time"), \
-             patch.object(extra,"nearest",side_effect=lambda path: point_rows(extra.NearestRows)):
+             patch.object(extra.noaa,"extract_native_values",return_value=(
+                 {"10u":[{"shortName":"10u","value":3.0}],
+                  "10v":[{"shortName":"10v","value":4.0}],
+                  "gust":[{"shortName":"gust","value":6.0}]},
+                 {"latitude":52.5,"longitude":9.34,"selection":"ecCodes_nearest_grid_point"})):
             rows=extra.fetch_gefs([0])
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]["forecast_coordinate_or_grid_point"]["latitude"],52.5)
