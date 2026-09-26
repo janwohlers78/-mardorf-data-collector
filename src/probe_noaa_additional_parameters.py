@@ -110,7 +110,7 @@ def base_query(file_name, directory, pad, variables, levels):
     return q
 
 
-def product_url(product, run, lead, variables=VARS, levels=None):
+def product_url(product, run, lead, variables=None, levels=None):
     ymd = run.strftime("%Y%m%d")
     hh = run.strftime("%H")
     if product == "gfs_0p25":
@@ -118,28 +118,39 @@ def product_url(product, run, lead, variables=VARS, levels=None):
         file_name = f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}"
         directory = f"/gfs.{ymd}/{hh}/atmos"
         pad = 0.30
+        product_vars = VARS
         product_levels = COMMON_LEVELS + GFS_EXTRA_LEVELS
     elif product == "gefs_0p25s":
         endpoint = "filter_gefs_atmos_0p25s.pl"
         file_name = f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}"
         directory = f"/gefs.{ymd}/{hh}/atmos/pgrb2sp25"
         pad = 0.30
+        product_vars = VARS
         product_levels = COMMON_LEVELS
     elif product == "gefs_0p50a":
         endpoint = "filter_gefs_atmos_0p50a.pl"
         file_name = f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}"
         directory = f"/gefs.{ymd}/{hh}/atmos/pgrb2ap5"
         pad = 0.75
+        # NOAA's 0.5-degree primary product does not advertise DPT.
+        product_vars = ("TMP", "RH", "PRMSL", "PRES", "TCDC", "CAPE", "CIN", "DSWRF")
         product_levels = COMMON_LEVELS
     elif product == "gefs_0p50b":
         endpoint = "filter_gefs_atmos_0p50b.pl"
         file_name = f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}"
         directory = f"/gefs.{ymd}/{hh}/atmos/pgrb2bp5"
         pad = 0.75
-        product_levels = COMMON_LEVELS
+        # Secondary product carries 2 m dew point and additional CAPE/CIN
+        # variants, but not the primary-product total-cloud/radiation contract.
+        product_vars = ("DPT", "CAPE", "CIN")
+        product_levels = ("2_m_above_ground", "surface", "255-0_mb_above_ground")
     else:
         raise ValueError(product)
-    q = base_query(file_name, directory, pad, variables, levels or product_levels)
+    q = base_query(
+        file_name, directory, pad,
+        variables if variables is not None else product_vars,
+        levels if levels is not None else product_levels,
+    )
     return "https://nomads.ncep.noaa.gov/cgi-bin/" + endpoint + "?" + urlencode(q)
 
 
