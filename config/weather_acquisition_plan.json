@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "phase2_icon_live_probe_validated_not_routine",
+  "status": "phase2e1_acquisition_grid_v2_active",
   "owner": "public_collector_acquisition_private_normalization",
   "parameters": [
     {
@@ -261,5 +261,70 @@
         "missing_policy": "explicit missing/fetch_error; never zero-fill; never invalidate wind-critical records"
       }
     }
+  },
+  "acquisition_grid_v2": {
+    "method_version": "acquisition-grid-v2",
+    "objective": "Acquire only forecast timestamps that private retention will keep; provider-native horizon remains separately recorded.",
+    "bands": [
+      {
+        "lead_hours": "0-48",
+        "step_hours": 3,
+        "cycle_hours_utc": "all_collected_cycles"
+      },
+      {
+        "lead_hours": "51-72",
+        "step_hours": 3,
+        "cycle_hours_utc": [
+          0,
+          6,
+          12,
+          18
+        ]
+      },
+      {
+        "lead_hours": "78-120",
+        "step_hours": 6,
+        "cycle_hours_utc": [
+          0,
+          6,
+          12,
+          18
+        ]
+      },
+      {
+        "lead_hours": "132-240",
+        "step_hours": 12,
+        "cycle_hours_utc": [
+          0,
+          12
+        ]
+      },
+      {
+        "lead_hours": "264-384",
+        "step_hours": 24,
+        "cycle_hours_utc": [
+          0,
+          12
+        ]
+      },
+      {
+        "lead_hours": ">384",
+        "step_hours": 24,
+        "cycle_hours_utc": [
+          0
+        ]
+      }
+    ],
+    "horizons": {
+      "provider_native_horizon": "provider/model/cycle-specific maximum; never redefined by retention",
+      "compatibility_horizon": "legacy/current JSON consumer horizon; model/cycle-specific",
+      "acquisition_horizon": "maximum lead present after applying Acquisition Grid v2 to the provider-native horizon",
+      "retention_horizon": "same lead/cycle matrix as Acquisition Grid v2 after the compatibility core"
+    },
+    "terminal_rule": "No off-grid terminal is synthesized. A terminal forecast is acquired only when it is a native timestamp that lies on a retained cycle/lead band.",
+    "interpolation": "forbidden",
+    "no_download_then_discard_goal": true,
+    "weather_context_rule": "NOAA weather context is requested only on leads actually selected by Acquisition Grid v2.",
+    "phase_boundary": "Provider due-cycle/no-op suppression is 2E-2; full GEFS 31-member production acquisition remains gated until after 2E-3."
   }
 }
