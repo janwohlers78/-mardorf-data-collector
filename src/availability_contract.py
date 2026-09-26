@@ -67,6 +67,65 @@ def normalize_field_item(item, observed_at):
     return item
 
 
+def _declaration(parameter, status, observed_at, *, product=None, evidence_type):
+    out = {
+        "semantic_id": f"availability:{product + ':' if product else ''}{parameter}",
+        "parameter_native": str(parameter),
+        "namespace": "availability",
+        "availability_status": status,
+        "availability_observed_at_utc": observed_at,
+        "availability_evidence_type": evidence_type,
+    }
+    if product:
+        out["field_provider_product"] = str(product)
+    if status == "received":
+        out["field_available_at_utc"] = observed_at
+    return out
+
+
+def availability_declarations(row, observed_at):
+    """Normalize legacy boolean missingness evidence into explicit state rows."""
+    out = []
+    seen = set()
+
+    def add(parameter, status, *, product=None, evidence_type):
+        key = (str(parameter), str(product or ""), status, evidence_type)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(_declaration(
+            parameter, status, observed_at,
+            product=product, evidence_type=evidence_type,
+        ))
+
+    product = row.get("provider_product")
+    for parameter, present in (row.get("field_availability") or {}).items():
+        if not isinstance(present, bool):
+            raise ValueError(f"field_availability must be boolean: {parameter}={present!r}")
+        add(
+            parameter,
+            "received" if present else "unsupported_by_provider_or_product",
+            product=product,
+            evidence_type="legacy_field_availability_boolean_v1",
+        )
+
+    for field_product, fields in (row.get("weather_context_availability") or {}).items():
+        if not isinstance(fields, dict):
+            raise ValueError(f"weather_context_availability must be an object for {field_product!r}")
+        for parameter, present in fields.items():
+            if not isinstance(present, bool):
+                raise ValueError(
+                    f"weather_context_availability must be boolean: {field_product}:{parameter}={present!r}"
+                )
+            add(
+                parameter,
+                "received" if present else "unsupported_by_provider_or_product",
+                product=field_product,
+                evidence_type="product_weather_context_boolean_v1",
+            )
+    return out
+
+
 def stamp_rows(rows, observed_at=None, replace_row_time=False):
     observed_at = observed_at or now()
     for row in rows or []:
@@ -76,16 +135,16 @@ def stamp_rows(rows, observed_at=None, replace_row_time=False):
             row["retrieved_at_utc"] = observed_at
         row_time = row["retrieved_at_utc"]
         values = row.get("values")
-        if not isinstance(values, dict):
-            continue
-        for parameter, raw in list(values.items()):
-            if isinstance(raw, list):
-                values[parameter] = [
-                    normalize_field_item(item, row_time) if isinstance(item, dict) else item
-                    for item in raw
-                ]
-            elif isinstance(raw, dict):
-                values[parameter] = normalize_field_item(raw, row_time)
+        if isinstance(values, dict):
+            for parameter, raw in list(values.items()):
+                if isinstance(raw, list):
+                    values[parameter] = [
+                        normalize_field_item(item, row_time) if isinstance(item, dict) else item
+                        for item in raw
+                    ]
+                elif isinstance(raw, dict):
+                    values[parameter] = normalize_field_item(raw, row_time)
+        row["field_availability_states"] = availability_declarations(row, row_time)
     return rows
 
 
@@ -123,6 +182,39 @@ def validate_snapshot(snapshot):
                     continue
                 if not row.get("retrieved_at_utc"):
                     problems.append(f"{scope}:{model}[{index}] missing retrieved_at_utc")
+                declarations = row.get("field_availability_states")
+                if declarations is None:
+                    problems.append(f"{scope}:{model}[{index}] missing field_availability_states")
+                elif not isinstance(declarations, list):
+                    problems.append(f"{scope}:{model}[{index}] field_availability_states is not a list")
+                else:
+                    for declaration_index, declaration in enumerate(declarations):
+                        if not isinstance(declaration, dict):
+                            problems.append(
+                                f"{scope}:{model}[{index}] availability declaration[{declaration_index}] is not an object"
+                            )
+                            continue
+                        status = declaration.get("availability_status")
+                        if status not in STATES:
+                            problems.append(
+                                f"{scope}:{model}[{index}] availability declaration[{declaration_index}] invalid status {status!r}"
+                            )
+                        if not declaration.get("parameter_native") or declaration.get("namespace") != "availability":
+                            problems.append(
+                                f"{scope}:{model}[{index}] availability declaration[{declaration_index}] identity incomplete"
+                            )
+                        if not declaration.get("availability_observed_at_utc"):
+                            problems.append(
+                                f"{scope}:{model}[{index}] availability declaration[{declaration_index}] missing observed time"
+                            )
+                        if status == "received" and not declaration.get("field_available_at_utc"):
+                            problems.append(
+                                f"{scope}:{model}[{index}] received declaration[{declaration_index}] missing field_available_at_utc"
+                            )
+                        if "value" in declaration:
+                            problems.append(
+                                f"{scope}:{model}[{index}] availability declaration[{declaration_index}] must not carry a value"
+                            )
                 for parameter, raw in (row.get("values") or {}).items():
                     items = raw if isinstance(raw, list) else [raw]
                     for item_index, item in enumerate(items):
