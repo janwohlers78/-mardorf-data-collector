@@ -33,6 +33,18 @@ class Phase1BWorkflowTests(unittest.TestCase):
         transfer_if = next(line for line in transfer.splitlines() if line.strip().startswith("if:"))
         self.assertIn("inputs.test_mode != true", transfer_if)
 
+    def test_tier_a_is_optional_but_runs_before_archive_and_transfer(self):
+        self.assertIn("Attach ICON Tier-A weather context", self.text)
+        self.assertIn("python src/collect_icon_tier_a.py --workers 4", self.text)
+        tier=self.text.index("Attach ICON Tier-A weather context")
+        archive=self.text.index("Archive remaining native model horizons")
+        transfer=self.text.index("Transfer payload and integrity history")
+        self.assertLess(tier,archive)
+        self.assertLess(tier,transfer)
+        block=self.text[tier:archive]
+        self.assertIn("continue-on-error: true",block)
+
+
 
 if __name__ == "__main__":
     unittest.main()
