@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 import math
 
 VERSION = "full-horizon-archive-v1"
+ACQUISITION_GRID_VERSION = "acquisition-grid-v2"
+RETENTION_GRID_VERSION = "acquisition-grid-v2"
 MODELS = ("ICON-D2", "ICON-D2-EPS", "ICON-EU", "ECMWF-IFS", "GFS", "GEFS-control")
 
 def utc(value):
@@ -74,13 +76,52 @@ def compatibility_hours(model, run):
         return 90  # Existing, frozen input contract; full 144 h is archived separately.
     return min(120, maximum_hours(model, run))
 
-def sampled_leads(model, run):
+def acquisition_leads(model, run):
+    """Frozen Acquisition Grid v2 at provider-native forecast times.
+
+    0-48 h: q3h on every collected cycle.
+    51-72 h: q3h on 00/06/12/18Z.
+    78-120 h: q6h on 00/06/12/18Z.
+    132-240 h: q12h on 00/12Z.
+    264-384 h: q24h on 00/12Z.
+    >384 h: q24h on 00Z only.
+
+    Provider-native horizon and compatibility horizon remain separate concepts.
+    A native terminal is included only when that lead's cycle is retained by
+    the grid; we never create interpolated timestamps.
+    """
     end = maximum_hours(model, run)
-    # Preserve existing cadence: 3h through 72h, 6h thereafter. No interpolation.
-    return list(range(0, min(72, end) + 1, 3)) + list(range(78, end + 1, 6))
+    hour = run.hour
+    leads = list(range(0, min(48, end) + 1, 3))
+    if hour in (0, 6, 12, 18) and end >= 51:
+        leads += list(range(51, min(72, end) + 1, 3))
+        leads += list(range(78, min(120, end) + 1, 6))
+    if hour in (0, 12) and end >= 132:
+        leads += list(range(132, min(240, end) + 1, 12))
+        leads += list(range(264, min(384, end) + 1, 24))
+    if hour == 0 and end > 384:
+        leads += list(range(408, end + 1, 24))
+    leads = sorted(set(h for h in leads if h <= end))
+    return leads
+
+def sampled_leads(model, run):
+    """Backward-compatible name for Acquisition Grid v2."""
+    return acquisition_leads(model, run)
 
 def extension_leads(model, run):
-    return [h for h in sampled_leads(model, run) if h > compatibility_hours(model, run)]
+    return [h for h in acquisition_leads(model, run) if h > compatibility_hours(model, run)]
+
+def acquisition_policy(model, run):
+    leads = acquisition_leads(model, run)
+    return {
+        "acquisition_grid_version": ACQUISITION_GRID_VERSION,
+        "retention_grid_version": RETENTION_GRID_VERSION,
+        "provider_native_horizon_hours": maximum_hours(model, run),
+        "compatibility_horizon_hours": compatibility_hours(model, run),
+        "acquisition_max_lead_hours": max(leads) if leads else None,
+        "acquisition_leads": leads,
+        "extension_leads": [h for h in leads if h > compatibility_hours(model, run)],
+    }
 
 def validate_archive(payload):
     """Recompute coverage; reject corrupt identities, never equate gaps with zero."""
