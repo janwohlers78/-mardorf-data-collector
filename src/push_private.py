@@ -269,6 +269,26 @@ def main():
     ap.add_argument("--integrity-md",required=True)
     args=ap.parse_args()
 
+    # Phase 2E-2 defense in depth: a provider-cycle no-op must never consume
+    # private-repository API writes even if a workflow condition regresses.
+    if args.kind=="models" and args.file and Path(args.file).exists():
+        try:
+            payload=json.loads(Path(args.file).read_text(encoding="utf-8"))
+        except Exception:
+            payload=None
+        gate=payload.get("provider_cycle_gate") if isinstance(payload,dict) else None
+        if (isinstance(gate,dict)
+                and gate.get("method_version")=="provider-cycle-gate-v1"
+                and gate.get("any_work") is False
+                and gate.get("delta_prediction")=="zero"):
+            print(json.dumps({
+                "kind":"models",
+                "status":"suppressed_noop",
+                "reason":"provider_cycle_gate_predicted_zero_delta",
+                "private_api_writes":0,
+            },indent=2))
+            return
+
     token=os.getenv("PRIVATE_REPO_TOKEN")
     if not token:raise RuntimeError("PRIVATE_REPO_TOKEN is not configured")
     repo=os.getenv("PRIVATE_REPO",DEFAULT_REPO);h=hdr(token)
