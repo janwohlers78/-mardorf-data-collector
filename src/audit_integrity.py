@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,hashlib,json,math
+import argparse,hashlib,json,math,os
 from collections import Counter
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -504,9 +504,14 @@ def audit_models(path,cfg,now):
         from full_horizon_contract import validate_archive
         try:
             archive_summary = validate_archive(d)
-            if archive_summary["status"] != "complete":
+            full_validation = os.getenv("FULL_VALIDATION", "").lower() == "true"
+            if archive_summary.get("horizon_status") != "complete" and full_validation:
+                issues.append(issue("FULL_HORIZON_REQUIRED_COVERAGE_INCOMPLETE", "ERROR", "archive", "coverage",
+                    "Full-model validation requires complete provider-native horizon coverage for every required model cycle.",
+                    coverage=archive_summary))
+            elif archive_summary["status"] != "complete":
                 issues.append(issue("FULL_HORIZON_ARCHIVE_PARTIAL", "WARN", "archive", "coverage",
-                    "Full-horizon collection has explicit gaps; legacy analysis coverage is unchanged.",
+                    "Full-horizon collection has explicit gaps or optional-field gaps; legacy analysis coverage is unchanged.",
                     coverage=archive_summary))
         except Exception as exc:
             issues.append(issue("FULL_HORIZON_ARCHIVE_INVALID", "ERROR", "archive", "integrity",
