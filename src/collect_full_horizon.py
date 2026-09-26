@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 import requests
 import extend_model_horizon as ext
 import noaa_weather_context as noaa
+import availability_contract as availability
 from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, extension_leads, validate_archive, gefs_lead_contract
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
 
@@ -121,7 +122,9 @@ def collect(payload,path,workers=4):
   for f in as_completed(fs):
    m,l=fs[f]
    try:
-    rr=f.result();prior=list(sources[m]["records"]);sources[m]["records"].extend(rr)
+    rr=f.result()
+    availability.stamp_rows(rr, observed_at=now(), replace_row_time=False)
+    prior=list(sources[m]["records"]);sources[m]["records"].extend(rr)
     for h in l:sources[m]["lead_status"][str(h)]={"status":"published","checked_at_utc":now()}
     candidate_core=[int(r["forecast_lead_hours"]) for r in payload.get("models",{}).get(m,[]) if r.get("derived") and r.get("forecast_lead_hours") is not None]
     candidate_tail=[int(r["forecast_lead_hours"]) for r in sources[m]["records"] if r.get("derived")]

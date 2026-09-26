@@ -21,6 +21,7 @@ from pathlib import Path
 
 import fetch_dwd_additional_models as dwd
 import fetch_model_data as base
+import availability_contract as availability
 from icon_parameter_probe import message_metadata, select_exact_message
 
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
@@ -48,11 +49,12 @@ def url_inventory(provider_model,cycle,param):
 
 def fetch_field(provider_model,cycle,lead,param,url,run,valid):
     started=time.monotonic()
-    stable={"parameter_native":param,"value":None,"availability_status":"missing","error_type":"OptionalFieldUnavailable"}
-    diagnostic={"parameter":param,"lead_hours":lead,"status":"missing"}
+    checked=datetime.now(timezone.utc).isoformat()
+    stable={"parameter_native":param,"value":None,"availability_status":"fetch_error","error_type":"OptionalFieldUnavailable","availability_observed_at_utc":checked}
+    diagnostic={"parameter":param,"lead_hours":lead,"status":"fetch_error"}
     if not url:
-        stable["availability_status"]="not_offered"
-        diagnostic.update(status="not_offered",reason="not_offered_for_cycle_or_lead",elapsed_seconds=round(time.monotonic()-started,3))
+        stable["availability_status"]="not_yet_published"
+        diagnostic.update(status="not_yet_published",reason="not_published_for_selected_cycle_or_lead",elapsed_seconds=round(time.monotonic()-started,3))
         return stable,diagnostic,None
     diagnostic["source_url"]=url
     try:
@@ -80,6 +82,8 @@ def fetch_field(provider_model,cycle,lead,param,url,run,valid):
                 "longitude":p["lon"],
                 "availability_status":"received",
                 "availability_evidence_type":"exact_grib_run_valid_selection",
+                "availability_observed_at_utc":datetime.now(timezone.utc).isoformat(),
+                "field_available_at_utc":datetime.now(timezone.utc).isoformat(),
                 "source_sha256":source_sha,
             })
         diagnostic.update(status="received",value_count=len(values),
@@ -90,6 +94,7 @@ def fetch_field(provider_model,cycle,lead,param,url,run,valid):
                           error_message=str(exc)[:700],
                           elapsed_seconds=round(time.monotonic()-started,3))
         stable["availability_status"]="fetch_error"
+        stable["availability_observed_at_utc"]=datetime.now(timezone.utc).isoformat()
         return stable,diagnostic,url
 
 
@@ -155,6 +160,15 @@ def attach(snapshot,workers=4):
             "by_parameter":by_parameter,
         }
     completed=datetime.now(timezone.utc)
+    # Tier-A mutates existing forecast records after their wind-critical base
+    # acquisition. The revision becomes visible only now; native fields keep
+    # their own earlier field_available_at_utc when the response succeeded.
+    for model in MODEL_MAP:
+        availability.stamp_rows(
+            snapshot.get("models",{}).get(model,[]),
+            observed_at=completed.isoformat(),
+            replace_row_time=True,
+        )
     summary={
         "schema_version":1,
         "method_version":METHOD_VERSION,

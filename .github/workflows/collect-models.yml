@@ -256,6 +256,10 @@ jobs:
         continue-on-error: true
         run: timeout --signal=TERM --kill-after=15s 12m python src/collect_full_horizon.py
 
+      - name: Finalize row and field availability contract
+        if: always() && ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
+        run: python src/availability_contract.py --input work/model_snapshot.json
+
       - name: Audit every model source, lead, timestamp and required field
         if: always() && ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true')
         run: |

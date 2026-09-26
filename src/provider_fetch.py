@@ -13,6 +13,7 @@ import fetch_model_data as base
 import fetch_extra_models as extra
 import fetch_dwd_additional_models as dwd
 import extend_model_horizon as ext
+import availability_contract as availability
 
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
 
@@ -85,6 +86,7 @@ def fetch_base(d,model,test):
         d["ensemble_hourly_source"]=hourly_source
     else:
         raise ValueError(model)
+    availability.stamp_rows(rows, observed_at=now(), replace_row_time=True)
     d["models"][model]=rows
     quality_one(d,model,leads)
 
@@ -99,6 +101,7 @@ def fetch_extension(d,model):
         new=ext.fetch_icon_eu(d)
     else:
         raise ValueError(f"extension unsupported for {model}")
+    availability.stamp_rows(new, observed_at=now(), replace_row_time=True)
     old=[r for r in d["models"].get(model,[]) if int(r.get("forecast_lead_hours",9999))<=48]
     d["models"][model]=old+new
     ext.quality(d)

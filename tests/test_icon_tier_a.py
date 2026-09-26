@@ -35,9 +35,9 @@ class IconTierARoutineTests(unittest.TestCase):
         run=datetime(2026,9,26,3,tzinfo=UTC)
         value,diag,url=t.fetch_field("icon-d2","2026092603",12,"cin_ml",None,run,run+timedelta(hours=12))
         self.assertIsNone(value["value"])
-        self.assertEqual(value["availability_status"],"not_offered")
+        self.assertEqual(value["availability_status"],"not_yet_published")
         self.assertNotEqual(value["value"],0)
-        self.assertEqual(diag["status"],"not_offered")
+        self.assertEqual(diag["status"],"not_yet_published")
         self.assertIsNone(url)
 
     @patch("collect_icon_tier_a.base.grib_nearest")
@@ -64,6 +64,8 @@ class IconTierARoutineTests(unittest.TestCase):
         self.assertEqual(values[0]["stepType"],"accum")
         self.assertEqual(values[0]["stepRange"],"0-12")
         self.assertEqual(values[0]["availability_status"],"received")
+        self.assertIsNotNone(values[0]["field_available_at_utc"])
+        self.assertIsNotNone(values[0]["availability_observed_at_utc"])
         self.assertEqual(len(values[0]["source_sha256"]),64)
 
     def test_attach_adds_four_fields_to_both_models_without_changing_wind(self):
@@ -89,6 +91,10 @@ class IconTierARoutineTests(unittest.TestCase):
             for r in snapshot["models"][model]:
                 self.assertEqual(set(t.TIER_A),set(r["values"]))
                 self.assertEqual(r["derived"]["wind_speed_ms"],5.0)
+                self.assertIsNotNone(r["retrieved_at_utc"])
+                for item in r["values"].values():
+                    self.assertEqual(item[0]["availability_status"],"received")
+                    self.assertIsNotNone(item[0]["field_available_at_utc"])
 
     def test_icon_eu_wind_fetchers_do_not_duplicate_tier_a_fields(self):
         from pathlib import Path
