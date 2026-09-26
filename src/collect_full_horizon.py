@@ -28,7 +28,11 @@ def noaa_requests(model,run,lead):
    products=[("gefs_0p25s","filter_gefs_atmos_0p25s.pl",f"/gefs.{day}/{hh}/atmos/pgrb2sp25",f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
   else:
    products=[("gefs_0p50a","filter_gefs_atmos_0p50a.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),
-             ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],contract["gust_required"])]
+             # pgrb2b is used for provider-native weather context only. NOMADS
+             # returns HTTP 500 when the historically attempted far-range GUST
+             # flag is combined with otherwise valid DPT/CAPE/CIN selections.
+             # Far-range gust therefore remains explicitly unavailable/optional.
+             ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",[],False)]
  out=[]
  for product,script,directory,filename,variables,required in products:
   pad=contract["subset_padding_degrees"] if contract is not None else 0.30
