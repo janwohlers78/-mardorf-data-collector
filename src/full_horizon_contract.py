@@ -147,10 +147,22 @@ def validate_archive(payload):
             raise ValueError(f"{model}: mixed parent cycles")
         run = next(iter(runs))
         expected_max = maximum_hours(model, run)
+        policy = acquisition_policy(model, run)
         if utc(source["run_time_utc"]) != run or source["target_max_hours"] != expected_max:
             raise ValueError(f"{model}: archive parent/target mismatch")
         if source.get("expected_max_lead_for_cycle", expected_max) != expected_max:
             raise ValueError(f"{model}: archive expected-max mismatch")
+        if source.get("provider_native_horizon_hours", expected_max) != expected_max:
+            raise ValueError(f"{model}: provider-native horizon mismatch")
+        if source.get("compatibility_horizon_hours", compatibility_hours(model, run)) != compatibility_hours(model, run):
+            raise ValueError(f"{model}: compatibility horizon mismatch")
+        if source.get("acquisition_grid_version", ACQUISITION_GRID_VERSION) != ACQUISITION_GRID_VERSION:
+            raise ValueError(f"{model}: acquisition-grid version mismatch")
+        if source.get("acquisition_max_lead_hours", policy["acquisition_max_lead_hours"]) != policy["acquisition_max_lead_hours"]:
+            raise ValueError(f"{model}: acquisition maximum mismatch")
+        requested = source.get("requested_extension_leads")
+        if requested is not None and list(requested) != policy["extension_leads"]:
+            raise ValueError(f"{model}: requested extension leads differ from Acquisition Grid v2")
         expected = set(extension_leads(model, run))
         lead_status = source.get("lead_status") or {}
         if not isinstance(lead_status, dict):
@@ -230,6 +242,11 @@ def validate_archive(payload):
             status_counts[retrieval] = status_counts.get(retrieval, 0) + 1
         summary[model] = {"status": status, "complete": complete, "horizon_complete": horizon_complete,
                           "gust_complete": gust_complete, "target_max_hours": expected_max,
+                          "provider_native_horizon_hours": expected_max,
+                          "compatibility_horizon_hours": compatibility_hours(model, run),
+                          "acquisition_grid_version": ACQUISITION_GRID_VERSION,
+                          "retention_grid_version": RETENTION_GRID_VERSION,
+                          "acquisition_max_lead_hours": policy["acquisition_max_lead_hours"],
                           "expected_max_lead_for_cycle": expected_max, "actual_max_lead": actual_max,
                           "received_extension_leads": sorted(seen), "missing_leads": missing,
                           "missing_gust_leads": sorted(missing_gust), "lead_status": lead_status,
