@@ -184,6 +184,24 @@ def discover(model,full_validation=True):
     raise ValueError(model)
 
 
+def gefs_supplemental_due(payload,run,checked_at):
+    archive=payload.get("full_horizon_archive") if isinstance(payload.get("full_horizon_archive"),dict) else {}
+    sources=archive.get("sources") if isinstance(archive.get("sources"),dict) else {}
+    source=sources.get("GEFS-control")
+    if not isinstance(source,dict) or source.get("run_time_utc")!=run.isoformat():
+        return False,None
+    state=source.get("gefs_pgrb2b_supplemental_retry")
+    if not isinstance(state,dict) or state.get("status")!="pending":
+        return False,state
+    try:
+        attempts=int(state.get("attempts",0))
+        maximum=int(state.get("maximum_attempts",1))
+        due=utc(state.get("next_retry_not_before_utc"))
+    except Exception:
+        return False,state
+    return attempts<maximum and checked_at>=due,state
+
+
 def rows_match_cycle(payload,model,run):
     rows=[x for x in (payload.get("models") or {}).get(model,[]) if isinstance(x,dict)]
     if not rows:
