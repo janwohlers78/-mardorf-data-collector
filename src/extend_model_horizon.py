@@ -149,7 +149,7 @@ def fetch_icon_eu(data):
     with tempfile.TemporaryDirectory() as td:
         for lead in leads_for_cycle('ICON-EU',base):
             vals={};urls=[];point=None
-            for param in ['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']:
+            for param in ['u_10m','v_10m','vmax_10m']:
                 if param not in cache:cache[param]=dwd_files(base,param)
                 tok=f'_{lead:03d}_';cand=[u for u in cache[param] if cycle in u and tok in u and param in u]
                 if not cand:vals[param]={'error':'file_not_published'};continue

@@ -240,7 +240,26 @@
       },
       "routine_collection_enabled": false,
       "analysis_changes": false,
-      "note": "Bounded provider proof only. Broad routine activation waits for runtime/download-budget design and Archive-v2 integration."
+      "note": "Bounded provider proof only. Broad routine activation waits for runtime/download-budget design and Archive-v2 integration.",
+      "tier_a_routine": {
+        "status": "candidate_pending_live_validation",
+        "method_version": "phase2-icon-tier-a-routine-v1",
+        "parameters": [
+          "tot_prec",
+          "cape_ml",
+          "cin_ml",
+          "clct"
+        ],
+        "models": [
+          "ICON-D2",
+          "ICON-EU"
+        ],
+        "cadence": "all collected <=48h leads; ICON-EU >48h follows existing cycle-specific 6h lead plan",
+        "raw_grib_retention": "ephemeral_runner_only",
+        "normalization_performed": false,
+        "analysis_changed": false,
+        "missing_policy": "explicit missing/fetch_error; never zero-fill; never invalidate wind-critical records"
+      }
     }
   }
 }

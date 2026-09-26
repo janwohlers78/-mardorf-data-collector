@@ -183,7 +183,7 @@ def fetch_icon_eu(leads,required_cycle_lead=None):
                    'fallback_required_lead_hours':requested,
                    'primary_selection_error':f'{type(primary).__name__}: {primary}'}
     base=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
-    params=['u_10m','v_10m','vmax_10m','tot_prec','cape_ml']
+    params=['u_10m','v_10m','vmax_10m']
     with tempfile.TemporaryDirectory() as td:
         for lead in leads:
             vals={}; urls=[]; point=None

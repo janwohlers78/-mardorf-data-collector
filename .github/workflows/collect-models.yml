@@ -237,6 +237,20 @@ jobs:
           done
           exit "$last"
 
+      - name: Attach ICON Tier-A weather context
+        if: (github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 10m python src/collect_icon_tier_a.py --workers 4
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            echo "ICON Tier-A optional context timed out; wind-critical collection remains auditable."
+          fi
+          exit "$rc"
+
       - name: Archive remaining native model horizons without changing analysis inputs
         if: ((github.event_name == 'workflow_dispatch' && inputs.watchdog != true) || steps.due.outputs.due == 'true') && inputs.test_mode != true
         continue-on-error: true
