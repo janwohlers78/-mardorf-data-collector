@@ -92,7 +92,7 @@ def evidence_path(model,run):
     safe=model.lower().replace("_","-")
     return (
         f"data/weather_archive/cycle_evidence/{safe}/"
-        f"{run:%Y/%m/%d}/run={run:%Y%m%dT%H%M%SZ}.json"
+        f"year={run:%Y}/month={run:%m}/day={run:%d}/run={run:%Y%m%dT%H%M%SZ}.json"
     )
 
 
