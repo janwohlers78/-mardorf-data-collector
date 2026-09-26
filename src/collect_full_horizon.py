@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 import requests
 import extend_model_horizon as ext
+import noaa_weather_context as noaa
 from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, extension_leads, validate_archive, gefs_lead_contract
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
 
@@ -27,13 +28,24 @@ def noaa_requests(model,run,lead):
    products=[("gefs_0p25s","filter_gefs_atmos_0p25s.pl",f"/gefs.{day}/{hh}/atmos/pgrb2sp25",f"gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
   else:
    products=[("gefs_0p50a","filter_gefs_atmos_0p50a.pl",f"/gefs.{day}/{hh}/atmos/pgrb2ap5",f"gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}",["UGRD","VGRD","APCP"],True),
-             ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],contract["gust_required"])]
+             # pgrb2b is used for provider-native weather context only. NOMADS
+             # returns HTTP 500 when the historically attempted far-range GUST
+             # flag is combined with otherwise valid DPT/CAPE/CIN selections.
+             # Far-range gust therefore remains explicitly unavailable/optional.
+             ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",[],False)]
  out=[]
  for product,script,directory,filename,variables,required in products:
   pad=contract["subset_padding_degrees"] if contract is not None else 0.30
-  q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"",
+  q={"file":filename,"dir":directory,"subregion":"",
      "leftlon":f"{ext.LON-pad:.4f}","rightlon":f"{ext.LON+pad:.4f}",
      "toplat":f"{ext.LAT+pad:.4f}","bottomlat":f"{ext.LAT-pad:.4f}"}; q.update({"var_"+v:"on" for v in variables})
+  # Wind-bearing products need their native wind/surface levels. The GEFS
+  # secondary pgrb2b weather product does not support 10 m AGL; sending that
+  # inherited flag makes NOMADS return HTTP 500 even though DPT/CAPE/CIN are
+  # available. Its valid levels are added by the product-specific registry.
+  if product!="gefs_0p50b":
+   q.update({"lev_10_m_above_ground":"on","lev_surface":"on"})
+  noaa.add_weather_flags(q,product)
   out.append((product,"https://nomads.ncep.noaa.gov/cgi-bin/"+script+"?"+urlencode(q),required))
  return out
 def _download(session,url,required,far_gefs):
@@ -50,7 +62,7 @@ def _download(session,url,required,far_gefs):
    if i+1<attempts: time.sleep(5*(i+1))
  raise PublicationUnavailable(str(last)) from last
 def fetch_noaa(model,run,lead):
- vals,evidence,optional_errors,point={},[],[],None
+ vals,evidence,optional_errors,point,weather_availability={},[],[],None,{}
  with requests.Session() as session,tempfile.TemporaryDirectory() as td:
   session.headers.update({"User-Agent":"mardorf-data-collector/full-horizon-v1"})
   for product,url,required in noaa_requests(model,run,lead):
@@ -58,11 +70,14 @@ def fetch_noaa(model,run,lead):
     content=_download(session,url,required,model=="GEFS-control" and lead>240)
     path=Path(td)/(product+".grib2"); path.write_bytes(content)
     ext.assert_grib_valid_time(path,run,run+timedelta(hours=lead),f"{model} archive {lead}")
-    rows=ext.nearest(path)
-    if point is not None and point!=rows.point: raise ValueError("GEFS a/b extraction points differ")
-    point=rows.point
-    for name,step,value in rows: vals.setdefault(name,[]).append({"stepRange":step,"value":value})
-    evidence.append({"product":product,"url":url,"sha256":hashlib.sha256(content).hexdigest()})
+    source_sha=hashlib.sha256(content).hexdigest()
+    product_values,product_point=noaa.extract_native_values(
+     path,ext.LAT,ext.LON,source_sha256=source_sha,product=product)
+    if point is not None and point!=product_point: raise ValueError("GEFS a/b extraction points differ")
+    point=product_point
+    for name,items in product_values.items(): vals.setdefault(name,[]).extend(items)
+    weather_availability[product]=noaa.weather_availability(product,product_values)
+    evidence.append({"product":product,"url":url,"sha256":source_sha,"response_bytes":len(content)})
    except Exception as exc:
     if required:
      message=f"required product {product} unavailable for same cycle {run.isoformat()} lead {lead}: {type(exc).__name__}: {exc}"
@@ -75,7 +90,7 @@ def fetch_noaa(model,run,lead):
  u,v,gust=one("10u","u"),one("10v","v"),one("gust","10fg")
  if u is None or v is None: raise ValueError("required U/V absent from returned product")
  if gust is None and not(model=="GEFS-control" and lead>240): raise ValueError("required gust absent from returned product")
- return [{"model":model,"run_time_utc":run.isoformat(),"forecast_lead_hours":lead,"valid_time_utc":(run+timedelta(hours=lead)).isoformat(),"retrieved_at_utc":now(),"provider_product":"+".join(x["product"] for x in evidence),"source":"NOAA/NCEP NOMADS GRIB2 full horizon","source_urls":[x["url"] for x in evidence],"grib_evidence":evidence,"optional_product_errors":optional_errors,"field_availability":{"wind_uv":True,"gust":gust is not None},"forecast_coordinate_or_grid_point":point,"values":vals,"derived":ext.derived(u,v,gust)}]
+ return [{"model":model,"run_time_utc":run.isoformat(),"forecast_lead_hours":lead,"valid_time_utc":(run+timedelta(hours=lead)).isoformat(),"retrieved_at_utc":now(),"provider_product":"+".join(x["product"] for x in evidence),"source":"NOAA/NCEP NOMADS GRIB2 full horizon","source_urls":[x["url"] for x in evidence],"grib_evidence":evidence,"optional_product_errors":optional_errors,"field_availability":{"wind_uv":True,"gust":gust is not None},"weather_context_availability":weather_availability,"forecast_coordinate_or_grid_point":point,"values":vals,"derived":ext.derived(u,v,gust)}]
 def fetch_ifs(payload,leads):
  rows=ext.fetch_ifs(payload,requested_leads=leads)
  for r in rows:r.update(retrieved_at_utc=now(),provider_product="ifs_oper_fc_0p25")

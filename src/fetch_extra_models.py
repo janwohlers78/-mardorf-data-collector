@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Add ECMWF IFS Open Data and NOAA GEFS control raw point forecasts to latest snapshot."""
-import argparse,json,math,re,subprocess,tempfile,os
+import argparse,hashlib,json,math,re,subprocess,tempfile,os
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -8,6 +8,7 @@ import requests
 from ecmwf.opendata import Client
 from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
 from full_horizon_contract import maximum_hours,gefs_lead_contract
+import noaa_weather_context as noaa
 LAT=52.4942; LON=9.3418
 ECMWF_SOURCE=os.getenv('ECMWF_OPEN_DATA_SOURCE','azure')
 ECMWF_PARAMS=['10u','10v','10fg','10fg3','tp','mucape']
@@ -64,12 +65,13 @@ def fetch_ifs(leads):
    out.append(rec)
  return out
 
-def gefs_url(cycle,lead):
+def gefs_url(cycle,lead,include_weather=True):
  ymd,hh=cycle[:8],cycle[8:]
  q={'file':f'gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}','lev_10_m_above_ground':'on','lev_surface':'on','var_UGRD':'on','var_VGRD':'on','var_GUST':'on','var_APCP':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2sp25'}
+ if include_weather:noaa.add_weather_flags(q,'gefs_0p25s')
  return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p25s.pl?'+urlencode(q)
 
-def gefs_far_url(cycle,lead):
+def gefs_far_url(cycle,lead,include_weather=False):
  ymd,hh=cycle[:8],cycle[8:]
  run=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc)
  contract=gefs_lead_contract(run,lead)
@@ -77,6 +79,7 @@ def gefs_far_url(cycle,lead):
   raise ValueError(f'GEFS far-product lead {lead} invalid for cycle {cycle}; contract={contract}')
  pad=contract['subset_padding_degrees']
  q={'file':f'gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}','lev_10_m_above_ground':'on','var_UGRD':'on','var_VGRD':'on','subregion':'','leftlon':f'{LON-pad:.4f}','rightlon':f'{LON+pad:.4f}','toplat':f'{LAT+pad:.4f}','bottomlat':f'{LAT-pad:.4f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2ap5'}
+ if include_weather:noaa.add_weather_flags(q,'gefs_0p50a')
  return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p50a.pl?'+urlencode(q)
 
 def gefs_required_url(cycle,lead):
@@ -84,7 +87,7 @@ def gefs_required_url(cycle,lead):
  contract=gefs_lead_contract(run,lead)
  if not contract['expected']:
   raise ValueError(f'GEFS lead {lead} exceeds cycle maximum {contract["expected_max_hours"]} for {cycle}')
- return gefs_url(cycle,lead) if contract['wind_product']=='gefs_0p25s' else gefs_far_url(cycle,lead)
+ return gefs_url(cycle,lead,include_weather=False) if contract['wind_product']=='gefs_0p25s' else gefs_far_url(cycle,lead,include_weather=False)
 
 def gefs_probe_lead(cycle,required_lead=0,require_far_horizon=False):
  run=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc)
@@ -141,15 +144,15 @@ def fetch_gefs(leads,return_selection_evidence=False):
  base=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
  with tempfile.TemporaryDirectory() as td:
   for lead in leads:
-   url=gefs_url(cyc,lead); r=S.get(url,timeout=90); r.raise_for_status()
+   url=gefs_url(cyc,lead,include_weather=True); r=S.get(url,timeout=90); r.raise_for_status()
    if r.content[:4]!=b'GRIB': raise RuntimeError(f'GEFS non-GRIB lead {lead}')
-   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GEFS-control lead {lead}'); rows=nearest(p); vals={}
-   for n,s,v in rows: vals.setdefault(n,[]).append({'stepRange':s,'value':v})
+   p=Path(td)/f'g_{lead}.grib2'; p.write_bytes(r.content); assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GEFS-control lead {lead}')
+   vals,point=noaa.extract_native_values(p,LAT,LON,source_sha256=hashlib.sha256(r.content).hexdigest(),product='gefs_0p25s')
    def one(*ns):
     for n in ns:
      if n in vals and vals[n]: return vals[n][0]['value']
    u=one('10u','u'); v=one('10v','v'); g=one('gust','10fg')
-   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point,'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature),'selection_evidence_method_version':selection_evidence['method_version']}}
+   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':'gefs_0p25s','source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{'gefs_0p25s':noaa.weather_availability('gefs_0p25s',vals)},'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature),'selection_evidence_method_version':selection_evidence['method_version']}}
    if u is not None and v is not None: rec['derived']=derived(u,v,g)
    out.append(rec)
  return (out,selection_evidence) if return_selection_evidence else out

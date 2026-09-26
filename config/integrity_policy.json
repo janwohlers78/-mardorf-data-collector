@@ -248,7 +248,15 @@
       "cape",
       "precipitation",
       "cin_ml",
-      "clct"
+      "clct",
+      "2t",
+      "2d",
+      "2r",
+      "prmsl",
+      "sp",
+      "tcc",
+      "cin",
+      "dswrf"
     ],
     "ensemble_identity": {
       "ICON-D2-EPS": {
@@ -319,6 +327,59 @@
         "source_sha256",
         "availability_status"
       ]
+    },
+    "noaa_weather_context": {
+      "method_version": "phase2c-noaa-full-weather-context-v1",
+      "models": [
+        "GFS",
+        "GEFS-control"
+      ],
+      "required_for_core_wind": false,
+      "missing_policy": "explicit_product_availability_never_zero_fill",
+      "candidate_filter_variables": [
+        "TMP",
+        "DPT",
+        "RH",
+        "PRMSL",
+        "PRES",
+        "TCDC",
+        "CAPE",
+        "CIN",
+        "DSWRF"
+      ],
+      "preserve_all_returned_native_variants": true,
+      "metadata_required_when_received": [
+        "shortName",
+        "name",
+        "paramId",
+        "units",
+        "typeOfLevel",
+        "level",
+        "stepType",
+        "stepRange",
+        "dataDate",
+        "dataTime",
+        "validityDate",
+        "validityTime",
+        "source_sha256",
+        "provider_product"
+      ],
+      "products": {
+        "gfs_0p25": {
+          "max_lead_hours": 384
+        },
+        "gefs_0p25s": {
+          "max_lead_hours": 240
+        },
+        "gefs_0p50a": {
+          "min_lead_hours": 246,
+          "role": "required wind/APCP plus weather context"
+        },
+        "gefs_0p50b": {
+          "min_lead_hours": 246,
+          "role": "optional gust plus DPT/CAPE/CIN context"
+        }
+      }
     }
   },
   "svg_policy": {

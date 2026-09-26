@@ -6,13 +6,14 @@ GFS and GEFS-control are extended at 3-hour cadence through 72 h and 6-hour
 cadence from 78 through 120 h. Leads >72 h are synoptic guidance only and are
 not treated as operational beginner kite clearance.
 """
-import bz2,json,math,re,subprocess,tempfile,os
+import bz2,hashlib,json,math,re,subprocess,tempfile,os
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from urllib.parse import urlencode,urljoin
 import requests
 from ecmwf.opendata import Client
 from grib_identity import _step_end_hours,assert_grib_batch_leads,assert_grib_valid_time,grib_run_times
+import noaa_weather_context as noaa
 
 LAT=52.4942;LON=9.3418;SNAP=Path(os.getenv('COLLECTOR_MODEL_FILE','work/model_snapshot.json'))
 TARGET_LEADS=list(range(51,73,3))+list(range(78,121,6))
@@ -74,8 +75,10 @@ def gfs_url(base,lead,gefs=False):
     cyc=base.strftime('%Y%m%d%H');ymd,hh=cyc[:8],cyc[8:]
     if gefs:
         q={'file':f'gec00.t{hh}z.pgrb2s.0p25.f{lead:03d}','lev_10_m_above_ground':'on','lev_surface':'on','var_UGRD':'on','var_VGRD':'on','var_GUST':'on','var_APCP':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2sp25'}
+        noaa.add_weather_flags(q,'gefs_0p25s')
         return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p25s.pl?'+urlencode(q)
     q={'file':f'gfs.t{hh}z.pgrb2.0p25.f{lead:03d}','lev_10_m_above_ground':'on','lev_surface':'on','var_UGRD':'on','var_VGRD':'on','var_GUST':'on','var_APCP':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gfs.{ymd}/{hh}/atmos'}
+    noaa.add_weather_flags(q,'gfs_0p25')
     return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'+urlencode(q)
 
 
@@ -85,14 +88,14 @@ def fetch_noaa(data,model,gefs=False):
         for lead in leads_for_cycle(model,base):
             url=gfs_url(base,lead,gefs);r=S.get(url,timeout=90);r.raise_for_status()
             if r.content[:4]!=b'GRIB':raise RuntimeError(f'{model} lead {lead}: non-GRIB response')
-            p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'{model} extension lead {lead}');vals={}
-            rows=nearest(p)
-            for n,s,v in rows:vals.setdefault(n,[]).append({'stepRange':s,'value':v})
+            p=Path(td)/f'{model}_{lead}.grib2';p.write_bytes(r.content);assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'{model} extension lead {lead}')
+            product='gefs_0p25s' if gefs else 'gfs_0p25'
+            vals,point=noaa.extract_native_values(p,LAT,LON,source_sha256=hashlib.sha256(r.content).hexdigest(),product=product)
             def one(*ns):
                 for n in ns:
                     if vals.get(n):return vals[n][0]['value']
                 return None
-            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point}
+            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':product,'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{product:noaa.weather_availability(product,vals)}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
     return out

@@ -24,32 +24,34 @@ class ProviderEdgeTests(unittest.TestCase):
             self.assertIn("10v",params)
 
     def test_gfs_full_validation_binds_base_cycle_to_terminal_f384(self):
-        rows=[
-            {"shortName":"10u","value":3.0,"lat":52.5,"lon":9.25},
-            {"shortName":"10v","value":4.0,"lat":52.5,"lon":9.25},
-            {"shortName":"gust","value":6.0,"lat":52.5,"lon":9.25},
-        ]
+        values={
+            "10u":[{"shortName":"10u","value":3.0}],
+            "10v":[{"shortName":"10v","value":4.0}],
+            "gust":[{"shortName":"gust","value":6.0}],
+        }
+        point={"latitude":52.5,"longitude":9.25,"selection":"ecCodes_nearest_grid_point"}
         with patch.dict("os.environ",{"FULL_VALIDATION":"true"}), \
              patch.object(base,"discover_gfs_cycle",return_value="2026092600") as discover, \
              patch.object(base,"get_grib",return_value=b"GRIBtest"), \
              patch.object(base,"assert_grib_valid_time"), \
-             patch.object(base,"grib_nearest",return_value=rows):
+             patch.object(base.noaa,"extract_native_values",return_value=(values,point)):
             out=base.fetch_gfs([0,48])
         discover.assert_called_once_with(384)
         self.assertEqual({x["forecast_lead_hours"] for x in out},{0,48})
         self.assertTrue(all(x["run_time_utc"]=="2026-09-26T00:00:00+00:00" for x in out))
 
     def test_gfs_normal_base_selection_keeps_requested_lead_probe(self):
-        rows=[
-            {"shortName":"10u","value":3.0,"lat":52.5,"lon":9.25},
-            {"shortName":"10v","value":4.0,"lat":52.5,"lon":9.25},
-            {"shortName":"gust","value":6.0,"lat":52.5,"lon":9.25},
-        ]
+        values={
+            "10u":[{"shortName":"10u","value":3.0}],
+            "10v":[{"shortName":"10v","value":4.0}],
+            "gust":[{"shortName":"gust","value":6.0}],
+        }
+        point={"latitude":52.5,"longitude":9.25,"selection":"ecCodes_nearest_grid_point"}
         with patch.dict("os.environ",{"FULL_VALIDATION":"false"}), \
              patch.object(base,"discover_gfs_cycle",return_value="2026092606") as discover, \
              patch.object(base,"get_grib",return_value=b"GRIBtest"), \
              patch.object(base,"assert_grib_valid_time"), \
-             patch.object(base,"grib_nearest",return_value=rows):
+             patch.object(base.noaa,"extract_native_values",return_value=(values,point)):
             base.fetch_gfs([0,48])
         discover.assert_called_once_with(48)
 

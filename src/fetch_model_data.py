@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Operational fetcher: official DWD ICON-D2 + NOAA/NCEP GFS point data for Mardorf.
-import argparse, bz2, json, math, re, subprocess, sys, tempfile, os, time
+import argparse, bz2, hashlib, json, math, re, subprocess, sys, tempfile, os, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 import requests
 from grib_identity import assert_grib_valid_time
+import noaa_weather_context as noaa
 
 LAT=52.4942
 LON=9.3418
@@ -128,6 +129,7 @@ def gfs_url(cycle,lead,probe=False):
     q.update({'lev_surface':'on','var_GUST':'on'})
     if not probe:
         q.update({'var_APCP':'on'})
+        noaa.add_weather_flags(q,'gfs_0p25')
     return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'+urlencode(q)
 
 
@@ -161,17 +163,18 @@ def fetch_gfs(leads):
         for lead in leads:
             base=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc)
             url=gfs_url(cycle,lead)
-            rec={'model':'GFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS','source_urls':[url],'values':{}}
+            rec={'model':'GFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':'gfs_0p25','source':'NOAA/NCEP NOMADS','source_urls':[url],'values':{}}
             try:
                 p=td/f'gfs_{lead}.grib2'; raw=get_grib(url,90,attempts=3)
                 p.write_bytes(raw)
                 assert_grib_valid_time(p,base,base+timedelta(hours=lead),f'GFS lead {lead}')
-                rows=grib_nearest(p)
-                rec['forecast_coordinate_or_grid_point']={
-                    'latitude':rows[0]['lat'],'longitude':rows[0]['lon'],
-                    'selection':'ecCodes_nearest_grid_point'}
-                for row in rows:
-                    rec['values'].setdefault(row['shortName'],[]).append(row)
+                values,point=noaa.extract_native_values(
+                    p,LAT,LON,source_sha256=hashlib.sha256(raw).hexdigest(),product='gfs_0p25')
+                rec['forecast_coordinate_or_grid_point']=point
+                rec['values']=values
+                rec['weather_context_availability']={
+                    'gfs_0p25':noaa.weather_availability('gfs_0p25',values)
+                }
             except Exception as e:
                 rec['error_type']=type(e).__name__; rec['error_message']=str(e)
             out.append(rec)
