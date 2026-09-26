@@ -104,15 +104,40 @@ def checkpoint(payload,path):
   archive_leads=[int(r["forecast_lead_hours"]) for r in s["records"] if r.get("derived")]
   s["actual_max_lead"]=max(core_leads+archive_leads) if core_leads or archive_leads else None
  a["coverage"]=validate_archive(payload);a["updated_at_utc"]=now();tmp=path.with_suffix(".tmp");tmp.write_text(json.dumps(payload,separators=(",",":"),allow_nan=False)+"\n");tmp.replace(path)
+def cycle_gate_action(payload,model):
+ plan=payload.get("provider_cycle_gate") if isinstance(payload.get("provider_cycle_gate"),dict) else {}
+ entry=(plan.get("models") or {}).get(model) if isinstance(plan.get("models"),dict) else None
+ return entry.get("action") if isinstance(entry,dict) else "fetch"
+
 def collect(payload,path,workers=4):
+ previous=payload.get("full_horizon_archive") if isinstance(payload.get("full_horizon_archive"),dict) else {}
+ previous_sources=previous.get("sources") if isinstance(previous.get("sources"),dict) else {}
  sources,jobs={},[]
  for model in MODELS:
-  core=payload.get("models",{}).get(model,[]);source={"records":[],"errors":[],"lead_status":{}};sources[model]=source
-  if not core:source["errors"].append({"reason":"parent_cycle_missing"});continue
-  run=ext.cycle_from_existing(payload,model);leads=extension_leads(model,run);expected_max=maximum_hours(model,run)
+  core=payload.get("models",{}).get(model,[])
+  if not core:
+   source={"records":[],"errors":[{"reason":"parent_cycle_missing"}],"lead_status":{}}
+   sources[model]=source
+   continue
+  run=ext.cycle_from_existing(payload,model)
+  action=cycle_gate_action(payload,model)
+  if action=="carry_forward":
+   prior=previous_sources.get(model)
+   if not isinstance(prior,dict) or prior.get("run_time_utc")!=run.isoformat():
+    raise RuntimeError(
+     f"{model} cycle gate requested carry-forward without matching prior full-horizon source")
+   source=json.loads(json.dumps(prior))
+   source["cycle_gate_action"]="carry_forward"
+   source["cycle_gate_checked_at_utc"]=(payload.get("provider_cycle_gate") or {}).get("checked_at_utc")
+   sources[model]=source
+   continue
+  source={"records":[],"errors":[],"lead_status":{}}
+  sources[model]=source
+  leads=extension_leads(model,run);expected_max=maximum_hours(model,run)
   policy=acquisition_policy(model,run)
   source.update(
    run_time_utc=run.isoformat(),
+   cycle_gate_action=action,
    target_max_hours=expected_max,
    expected_max_lead_for_cycle=expected_max,
    provider_native_horizon_hours=policy["provider_native_horizon_hours"],
