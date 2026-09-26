@@ -122,9 +122,13 @@ def collect(payload,path,workers=4):
     sources[m]["errors"].append({"leads":l,"type":type(exc).__name__,"reason":str(exc)[:600],"retrieval_status":status})
    checkpoint(payload,path)
  return payload["full_horizon_archive"]["coverage"]
+def archive_exit_code(coverage):
+ return 0 if coverage.get("horizon_status")=="complete" else 1
+
 def main():
  p=json.loads(SNAP.read_text())
  if p.get("mode")=="test":raise RuntimeError("full-horizon collection is production-only")
  r=collect(p,SNAP);print(json.dumps(r,sort_keys=True))
- if r["status"]!="complete":raise SystemExit(1)
+ code=archive_exit_code(r)
+ if code:raise SystemExit(code)
 if __name__=="__main__":main()
