@@ -54,9 +54,53 @@ class AvailabilityContractTests(unittest.TestCase):
         self.assertEqual(rows[0]["values"]["wind"][0]["field_available_at_utc"],"2026-09-26T05:00:00+00:00")
         self.assertEqual(rows[0]["values"]["cape"][0]["field_available_at_utc"],"2026-09-26T05:20:00+00:00")
 
+    def test_legacy_boolean_missingness_becomes_explicit_declarations(self):
+        row={
+            "provider_product":"gefs_0p50a",
+            "retrieved_at_utc":"2026-09-26T05:00:00+00:00",
+            "field_availability":{"wind_uv":True,"gust":False},
+            "weather_context_availability":{
+                "gefs_0p50a":{"TMP":True,"DPT":False},
+            },
+            "values":{},
+        }
+        a.stamp_rows([row],observed_at="2026-09-26T05:00:00+00:00")
+        got={
+            (x["field_provider_product"],x["parameter_native"]):x
+            for x in row["field_availability_states"]
+        }
+        self.assertEqual(got[("gefs_0p50a","gust")]["availability_status"],
+                         "unsupported_by_provider_or_product")
+        self.assertNotIn("field_available_at_utc",got[("gefs_0p50a","gust")])
+        self.assertEqual(got[("gefs_0p50a","wind_uv")]["availability_status"],"received")
+        self.assertEqual(got[("gefs_0p50a","TMP")]["availability_status"],"received")
+        self.assertEqual(got[("gefs_0p50a","DPT")]["availability_status"],
+                         "unsupported_by_provider_or_product")
+        self.assertTrue(all("value" not in x for x in row["field_availability_states"]))
+
+    def test_snapshot_validator_requires_declaration_contract(self):
+        payload={"models":{"GEFS-control":[{
+            "retrieved_at_utc":"2026-09-26T05:00:00+00:00",
+            "field_availability_states":[{
+                "semantic_id":"availability:gefs_0p50a:gust",
+                "parameter_native":"gust",
+                "namespace":"availability",
+                "field_provider_product":"gefs_0p50a",
+                "availability_status":"unsupported_by_provider_or_product",
+                "availability_observed_at_utc":"2026-09-26T05:00:00+00:00",
+                "availability_evidence_type":"legacy_field_availability_boolean_v1",
+            }],
+            "values":{},
+        }]}}
+        self.assertTrue(a.validate_snapshot(payload))
+        payload["models"]["GEFS-control"][0]["field_availability_states"][0]["availability_status"]="mystery"
+        with self.assertRaisesRegex(ValueError,"invalid status"):
+            a.validate_snapshot(payload)
+
     def test_snapshot_validator_requires_closed_contract(self):
         payload={"models":{"GFS":[{
             "retrieved_at_utc":"2026-09-26T05:00:00+00:00",
+            "field_availability_states":[],
             "values":{"2t":[{
                 "value":280.0,
                 "availability_status":"received",
