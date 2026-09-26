@@ -163,7 +163,7 @@ def fetch_gfs(leads):
         for lead in leads:
             base=datetime.strptime(cycle,'%Y%m%d%H').replace(tzinfo=timezone.utc)
             url=gfs_url(cycle,lead)
-            rec={'model':'GFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS','source_urls':[url],'values':{}}
+            rec={'model':'GFS','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':'gfs_0p25','source':'NOAA/NCEP NOMADS','source_urls':[url],'values':{}}
             try:
                 p=td/f'gfs_{lead}.grib2'; raw=get_grib(url,90,attempts=3)
                 p.write_bytes(raw)
