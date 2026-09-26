@@ -95,7 +95,7 @@ def fetch_noaa(data,model,gefs=False):
                 for n in ns:
                     if vals.get(n):return vals[n][0]['value']
                 return None
-            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{product:noaa.weather_availability(product,vals)}}
+            u=one('10u','u');v=one('10v','v');g=one('gust','10fg');rec={'model':model,'run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'provider_product':product,'source':'NOAA/NCEP NOMADS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':point,'weather_context_availability':{product:noaa.weather_availability(product,vals)}}
             if u is not None and v is not None:rec['derived']=derived(u,v,g)
             out.append(rec)
     return out
