@@ -21,7 +21,7 @@ import os
 import tempfile
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import fetch_model_data as base
@@ -149,7 +149,6 @@ def _ecmwf_cycle(full_validation=True):
                     "exception_type":type(exc).__name__,
                     "exception_message":str(exc)[:300],
                 })
-                from datetime import timedelta
                 candidate=candidate-timedelta(hours=6)
         raise RuntimeError(f"No mature ECMWF cycle found from latest={latest.isoformat()}; failures={failures}")
 
