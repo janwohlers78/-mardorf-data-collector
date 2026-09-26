@@ -75,6 +75,32 @@ class HorizonTests(unittest.TestCase):
         self.assertTrue(all("f384" in u for u in calls[:3]))
         self.assertIn("f840", calls[3])
 
+    def test_gefs_discovery_persists_newer_cycle_maturity_evidence(self):
+        calls = []
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 9, 25, 23, 0, tzinfo=timezone.utc)
+
+        class Response:
+            status_code = 200
+            def __init__(self, ok):
+                self.content = b"GRIB-test" if ok else b"not-grib"
+
+        def get(url, timeout=None):
+            calls.append(url)
+            return Response("f840" in url)
+
+        with patch.object(extra, "datetime", FixedDateTime), patch.object(extra.S, "get", side_effect=get):
+            selected,evidence = extra.discover_gefs(48, require_far_horizon=True, return_evidence=True)
+        self.assertEqual(selected, "2026092500")
+        self.assertEqual(evidence["method_version"], "gefs-newest-mature-cycle-selection-v1")
+        self.assertTrue(evidence["full_horizon_publication_required"])
+        self.assertEqual(evidence["selected_cycle_run_time_utc"], "2026-09-25T00:00:00+00:00")
+        self.assertEqual(evidence["selected_publication_probe_lead"], 840)
+        self.assertEqual([x["status"] for x in evidence["attempts"]], ["not_published","not_published","not_published","published"])
+        self.assertEqual([x["publication_probe_lead"] for x in evidence["attempts"]], [384,384,384,840])
+
     def test_gefs_product_boundary_and_gust_secondary_product(self):
         run = datetime(2026, 9, 25, tzinfo=timezone.utc)
         self.assertEqual(len(fetch.noaa_requests("GEFS-control", run, 240)), 1)
