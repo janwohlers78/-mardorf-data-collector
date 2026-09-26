@@ -9,7 +9,7 @@ import requests
 import extend_model_horizon as ext
 import noaa_weather_context as noaa
 import availability_contract as availability
-from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, extension_leads, validate_archive, gefs_lead_contract
+from full_horizon_contract import VERSION, MODELS, utc, maximum_hours, compatibility_hours, extension_leads, acquisition_policy, validate_archive, gefs_lead_contract
 SNAP=Path(os.getenv("COLLECTOR_MODEL_FILE","work/model_snapshot.json"))
 
 class PublicationUnavailable(RuntimeError):
@@ -110,11 +110,19 @@ def collect(payload,path,workers=4):
   core=payload.get("models",{}).get(model,[]);source={"records":[],"errors":[],"lead_status":{}};sources[model]=source
   if not core:source["errors"].append({"reason":"parent_cycle_missing"});continue
   run=ext.cycle_from_existing(payload,model);leads=extension_leads(model,run);expected_max=maximum_hours(model,run)
-  source.update(run_time_utc=run.isoformat(),target_max_hours=expected_max,expected_max_lead_for_cycle=expected_max,requested_extension_leads=leads)
+  policy=acquisition_policy(model,run)
+  source.update(
+   run_time_utc=run.isoformat(),
+   target_max_hours=expected_max,
+   expected_max_lead_for_cycle=expected_max,
+   provider_native_horizon_hours=policy["provider_native_horizon_hours"],
+   compatibility_horizon_hours=policy["compatibility_horizon_hours"],
+   acquisition_grid_version=policy["acquisition_grid_version"],
+   retention_grid_version=policy["retention_grid_version"],
+   acquisition_max_lead_hours=policy["acquisition_max_lead_hours"],
+   requested_extension_leads=leads,
+  )
   for h in leads:source["lead_status"][str(h)]={"status":"pending"}
-  if model=="GEFS-control":
-   for h in range(246,841,6):
-    if h>expected_max:source["lead_status"][str(h)]={"status":"not_expected_for_cycle"}
   jobs.extend((model,leads[i:i+6]) for i in range(0,len(leads),6)) if model=="ECMWF-IFS" else jobs.extend((model,[h]) for h in leads)
  payload["full_horizon_archive"]={"method_version":VERSION,"started_at_utc":now(),"sources":sources};checkpoint(payload,path)
  with ThreadPoolExecutor(max_workers=workers) as pool:
