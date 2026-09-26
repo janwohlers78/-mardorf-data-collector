@@ -13,9 +13,20 @@ permissions:
 jobs:
   diagnostic:
     runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      COLLECTOR_MODEL_FILE: work/model_snapshot.json
+      FULL_VALIDATION: "true"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Install ecCodes
+        run: sudo apt-get update && sudo apt-get install -y libeccodes-tools
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-runtime.txt
       - name: Compile
-        run: python3 -m compileall -q src
+        run: python -m compileall -q src
