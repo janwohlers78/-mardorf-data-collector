@@ -5,7 +5,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import tempfile
 
-from audit_integrity import audit_models,audit_svg,audit_skm,audit_eps_hourly_source
+from audit_integrity import audit_models,audit_svg,audit_skm,audit_eps_hourly_source,full_horizon_coverage_issue
 from check_collection_due import evaluate_latest_success
 
 POLICY=json.loads(Path("config/integrity_policy.json").read_text(encoding="utf-8"))
@@ -120,6 +120,18 @@ class IntegrityAuditTests(unittest.TestCase):
         broken["response_run_binding"]={}
         failures,_=audit_eps_hourly_source(broken,run,20)
         self.assertTrue(any(x["reason"]=="hourly_source_run_binding_evidence_missing" for x in failures),failures)
+
+    def test_full_validation_escalates_required_horizon_gap_only(self):
+        partial_horizon={"status":"partial","horizon_status":"partial"}
+        optional_only={"status":"partial","horizon_status":"complete"}
+        complete={"status":"complete","horizon_status":"complete"}
+        self.assertEqual(full_horizon_coverage_issue(partial_horizon, True)[:2],
+                         ("FULL_HORIZON_REQUIRED_COVERAGE_INCOMPLETE","ERROR"))
+        self.assertEqual(full_horizon_coverage_issue(partial_horizon, False)[:2],
+                         ("FULL_HORIZON_ARCHIVE_PARTIAL","WARN"))
+        self.assertEqual(full_horizon_coverage_issue(optional_only, True)[:2],
+                         ("FULL_HORIZON_ARCHIVE_PARTIAL","WARN"))
+        self.assertIsNone(full_horizon_coverage_issue(complete, True))
 
     def test_complete_reduced_model_bundle_passes(self):
         now=datetime.now(timezone.utc)
