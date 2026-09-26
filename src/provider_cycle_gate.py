@@ -267,7 +267,18 @@ def build_plan(repo,token,full_validation=True,discover_fn=discover):
                 seed_payload_rows_match=bool(rows_ok),
             )
             if archived and source_ok and rows_ok:
-                entry.update(action="carry_forward",reason="selected_cycle_already_archived")
+                supplement_due,supplement_state=(
+                    gefs_supplemental_due(seed,run,checked)
+                    if model=="GEFS-control" else (False,None)
+                )
+                if supplement_due:
+                    entry.update(
+                        action="supplemental_retry",
+                        reason="archived_cycle_has_due_bounded_pgrb2b_retry",
+                        supplemental_retry_state=supplement_state,
+                    )
+                else:
+                    entry.update(action="carry_forward",reason="selected_cycle_already_archived")
             else:
                 missing=[]
                 if not archived: missing.append("private_cycle_evidence")
