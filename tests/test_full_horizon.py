@@ -35,14 +35,45 @@ def rows(model, run, leads):
 
 class HorizonTests(unittest.TestCase):
     def test_cycle_maxima_and_sampling(self):
+        expected_native = {
+            0: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":360,"GFS":384,"GEFS-control":840},
+            6: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":144,"GFS":384,"GEFS-control":384},
+            12: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":360,"GFS":384,"GEFS-control":384},
+            18: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":144,"GFS":384,"GEFS-control":384},
+        }
+        expected_acquisition_max = {
+            0: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":360,"GFS":384,"GEFS-control":840},
+            6: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":120,"GFS":120,"GEFS-control":120},
+            12: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":360,"GFS":384,"GEFS-control":384},
+            18: {"ICON-D2":48,"ICON-D2-EPS":48,"ICON-EU":120,"ECMWF-IFS":120,"GFS":120,"GEFS-control":120},
+        }
         for hour in (0, 6, 12, 18):
             run = datetime(2026, 9, 25, hour, tzinfo=timezone.utc)
-            expected = {"ICON-D2": 48, "ICON-D2-EPS": 48, "ICON-EU": 120,
-                        "ECMWF-IFS": 360 if hour in (0, 12) else 144,
-                        "GFS": 384, "GEFS-control": 840 if hour == 0 else 384}
-            for model, maximum in expected.items():
-                self.assertEqual(max(c.sampled_leads(model, run)), maximum)
-                self.assertEqual(len(c.sampled_leads(model, run)), len(set(c.sampled_leads(model, run))))
+            for model in c.MODELS:
+                self.assertEqual(c.maximum_hours(model, run), expected_native[hour][model])
+                self.assertEqual(max(c.acquisition_leads(model, run)), expected_acquisition_max[hour][model])
+                self.assertEqual(len(c.acquisition_leads(model, run)), len(set(c.acquisition_leads(model, run))))
+
+    def test_acquisition_grid_v2_exact_sparse_long_range_bands(self):
+        run00 = datetime(2026, 9, 25, 0, tzinfo=timezone.utc)
+        run06 = datetime(2026, 9, 25, 6, tzinfo=timezone.utc)
+        gfs00 = c.acquisition_leads("GFS", run00)
+        self.assertEqual([h for h in gfs00 if 132 <= h <= 240], list(range(132,241,12)))
+        self.assertEqual([h for h in gfs00 if 240 < h <= 384], list(range(264,385,24)))
+        self.assertNotIn(126, gfs00)
+        self.assertNotIn(246, gfs00)
+        self.assertEqual(c.acquisition_leads("GFS", run06)[-1], 120)
+        gefs00 = c.acquisition_leads("GEFS-control", run00)
+        self.assertEqual([h for h in gefs00 if h > 384], list(range(408,841,24)))
+        self.assertEqual(len(gefs00), 68)
+        self.assertEqual(c.ACQUISITION_GRID_VERSION, "acquisition-grid-v2")
+
+    def test_extension_leads_begin_after_compatibility_horizon(self):
+        run06 = datetime(2026, 9, 25, 6, tzinfo=timezone.utc)
+        self.assertEqual(c.compatibility_hours("ECMWF-IFS", run06), 90)
+        self.assertEqual(c.extension_leads("ECMWF-IFS", run06), [96,102,108,114,120])
+        self.assertEqual(c.extension_leads("GFS", run06), [])
+        self.assertEqual(c.extension_leads("GEFS-control", run06), [])
 
     def test_gefs_cycle_specific_contract_and_maximum(self):
         run00 = datetime(2026, 9, 25, 0, tzinfo=timezone.utc)
@@ -186,16 +217,18 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["sources"]["GEFS-control"]["received_extension_leads"][-1], 840)
 
-    def test_nonzero_gefs_cycle_persists_not_expected_far_leads_and_actual_max(self):
+    def test_nonzero_gefs_cycle_records_native_horizon_but_does_not_download_discarded_far_leads(self):
         d, summary = self.collect(hour=6)
         source = d["full_horizon_archive"]["sources"]["GEFS-control"]
         gefs = summary["sources"]["GEFS-control"]
-        self.assertEqual(source["expected_max_lead_for_cycle"], 384)
-        self.assertEqual(source["actual_max_lead"], 384)
+        self.assertEqual(source["provider_native_horizon_hours"], 384)
+        self.assertEqual(source["compatibility_horizon_hours"], 120)
+        self.assertEqual(source["acquisition_max_lead_hours"], 120)
+        self.assertEqual(source["requested_extension_leads"], [])
+        self.assertEqual(source["actual_max_lead"], 120)
         self.assertEqual(gefs["expected_max_lead_for_cycle"], 384)
-        self.assertEqual(gefs["actual_max_lead"], 384)
-        self.assertEqual(source["lead_status"]["390"]["status"], "not_expected_for_cycle")
-        self.assertEqual(source["lead_status"]["384"]["status"], "published")
+        self.assertEqual(gefs["actual_max_lead"], 120)
+        self.assertEqual(source["lead_status"], {})
         self.assertEqual(gefs["missing_leads"], [])
 
     def test_partial_provider_preserves_successes_and_marks_gap(self):
