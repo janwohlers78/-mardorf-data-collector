@@ -150,7 +150,12 @@ def discover_gfs_cycle(required_lead=0):
 
 
 def fetch_gfs(leads):
-    cycle=discover_gfs_cycle(max(leads) if leads else 0); out=[]
+    # In hard full-horizon validation bind the base snapshot to a GFS cycle
+    # whose native terminal f384 product is already published.  Otherwise a
+    # fresh cycle can pass the <=48 h base fetch and fail moments later when
+    # the archive stage requests its still-publishing long range.
+    required_probe=384 if os.getenv('FULL_VALIDATION','').lower()=='true' else (max(leads) if leads else 0)
+    cycle=discover_gfs_cycle(required_probe); out=[]
     with tempfile.TemporaryDirectory() as td:
         td=Path(td)
         for lead in leads:
