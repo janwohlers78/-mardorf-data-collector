@@ -92,27 +92,53 @@ def gefs_probe_lead(cycle,required_lead=0,require_far_horizon=False):
  if require_far_horizon:return target
  return required_lead if required_lead<=target else None
 
-def discover_gefs(required_lead=0,require_far_horizon=False):
+def discover_gefs(required_lead=0,require_far_horizon=False,return_evidence=False):
  now=datetime.now(timezone.utc); attempts=[]
  for dd in range(3):
   d=(now-timedelta(days=dd)).date()
   for hh in ['18','12','06','00']:
-   cyc=f'{d:%Y%m%d}{hh}'; probe_lead=gefs_probe_lead(cyc,required_lead,require_far_horizon)
+   cyc=f'{d:%Y%m%d}{hh}'; run=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc)
+   probe_lead=gefs_probe_lead(cyc,required_lead,require_far_horizon)
+   attempt={
+    'cycle_run_time_utc':run.isoformat(),
+    'expected_max_lead_for_cycle':maximum_hours('GEFS-control',run),
+    'publication_probe_lead':probe_lead,
+   }
    if probe_lead is None:
-    attempts.append((cyc,'NOT_EXPECTED',required_lead));continue
+    attempt.update(status='not_expected',required_lead=required_lead);attempts.append(attempt);continue
    probe=gefs_required_url(cyc,probe_lead)
    try:r=S.get(probe,timeout=35)
-   except Exception as e: attempts.append((cyc,probe_lead,'EXC',str(e)[:80])); continue
-   attempts.append((cyc,probe_lead,r.status_code,len(r.content),r.content[:4]))
-   if r.status_code==200 and r.content[:4]==b'GRIB': return cyc
+   except Exception as e:
+    attempt.update(status='request_error',exception_type=type(e).__name__,exception_message=str(e)[:160])
+    attempts.append(attempt);continue
+   published=r.status_code==200 and r.content[:4]==b'GRIB'
+   attempt.update(
+    status='published' if published else 'not_published',
+    http_status=r.status_code,response_bytes=len(r.content),grib_magic=bool(r.content[:4]==b'GRIB'))
+   attempts.append(attempt)
+   if published:
+    evidence={
+     'method_version':'gefs-newest-mature-cycle-selection-v1',
+     'full_horizon_publication_required':bool(require_far_horizon),
+     'required_base_lead':int(required_lead),
+     'selection_checked_at_utc':now.isoformat(),
+     'selected_cycle_run_time_utc':run.isoformat(),
+     'selected_expected_max_lead_hours':maximum_hours('GEFS-control',run),
+     'selected_publication_probe_lead':int(probe_lead),
+     'attempts':attempts,
+    }
+    return (cyc,evidence) if return_evidence else cyc
  raise RuntimeError(f'No GEFS control cycle satisfying publication requirement discovered; far={require_far_horizon}; attempts={attempts}')
 
-def fetch_gefs(leads):
- # Full-model validation must bind the base snapshot to a cycle whose far-horizon
- # pgrb2a product is already published. Otherwise a fresh 0.25-degree cycle can
- # be selected while its >240 h 0.5-degree files are still in the publication race.
+def fetch_gefs(leads,return_selection_evidence=False):
+ # Full-model validation must bind the base snapshot to the newest cycle whose
+ # cycle-specific terminal horizon is already published.  Selection evidence is
+ # persisted separately so the integrity audit can distinguish mature-cycle
+ # archival semantics from ordinary forecast freshness.
  mature=os.getenv('FULL_VALIDATION','').lower()=='true'
- cyc=discover_gefs(max(leads) if leads else 0,require_far_horizon=mature); base=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
+ cyc,selection_evidence=discover_gefs(
+  max(leads) if leads else 0,require_far_horizon=mature,return_evidence=True)
+ base=datetime.strptime(cyc,'%Y%m%d%H').replace(tzinfo=timezone.utc); out=[]
  with tempfile.TemporaryDirectory() as td:
   for lead in leads:
    url=gefs_url(cyc,lead); r=S.get(url,timeout=90); r.raise_for_status()
@@ -123,10 +149,10 @@ def fetch_gefs(leads):
     for n in ns:
      if n in vals and vals[n]: return vals[n][0]['value']
    u=one('10u','u'); v=one('10v','v'); g=one('gust','10fg')
-   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point,'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature)}}
+   rec={'model':'GEFS-control','run_time_utc':base.isoformat(),'forecast_lead_hours':lead,'valid_time_utc':(base+timedelta(hours=lead)).isoformat(),'source':'NOAA/NCEP NOMADS GEFS raw GRIB2','source_urls':[url],'values':vals,'forecast_coordinate_or_grid_point':rows.point,'cycle_selection':{'far_horizon_publication_required':mature,'expected_max_lead_for_cycle':maximum_hours('GEFS-control',base),'publication_probe_lead':gefs_probe_lead(cyc,max(leads) if leads else 0,mature),'selection_evidence_method_version':selection_evidence['method_version']}}
    if u is not None and v is not None: rec['derived']=derived(u,v,g)
    out.append(rec)
- return out
+ return (out,selection_evidence) if return_selection_evidence else out
 
 def main():
  ap=argparse.ArgumentParser(); ap.add_argument('--test',action='store_true'); a=ap.parse_args(); leads=[0,12,24,36,48] if a.test else list(range(0,49,3))
