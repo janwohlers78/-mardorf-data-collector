@@ -75,7 +75,8 @@ def gefs_far_url(cycle,lead):
  contract=gefs_lead_contract(run,lead)
  if not contract['expected'] or contract['wind_product']!='gefs_0p50a':
   raise ValueError(f'GEFS far-product lead {lead} invalid for cycle {cycle}; contract={contract}')
- q={'file':f'gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}','lev_10_m_above_ground':'on','var_UGRD':'on','var_VGRD':'on','subregion':'','leftlon':f'{LON-.3:.3f}','rightlon':f'{LON+.3:.3f}','toplat':f'{LAT+.3:.3f}','bottomlat':f'{LAT-.3:.3f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2ap5'}
+ pad=contract['subset_padding_degrees']
+ q={'file':f'gec00.t{hh}z.pgrb2a.0p50.f{lead:03d}','lev_10_m_above_ground':'on','var_UGRD':'on','var_VGRD':'on','subregion':'','leftlon':f'{LON-pad:.4f}','rightlon':f'{LON+pad:.4f}','toplat':f'{LAT+pad:.4f}','bottomlat':f'{LAT-pad:.4f}','dir':f'/gefs.{ymd}/{hh}/atmos/pgrb2ap5'}
  return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p50a.pl?'+urlencode(q)
 
 def gefs_required_url(cycle,lead):

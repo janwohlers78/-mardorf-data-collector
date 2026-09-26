@@ -47,6 +47,7 @@ def gefs_lead_contract(run, lead):
             "wind_resolution_degrees": None,
             "gust_product": None,
             "gust_required": False,
+            "subset_padding_degrees": None,
         }
     if lead <= 240:
         return {
@@ -56,6 +57,7 @@ def gefs_lead_contract(run, lead):
             "wind_resolution_degrees": 0.25,
             "gust_product": "gefs_0p25s",
             "gust_required": True,
+            "subset_padding_degrees": 0.30,
         }
     return {
         "expected": True,
@@ -64,6 +66,7 @@ def gefs_lead_contract(run, lead):
         "wind_resolution_degrees": 0.5,
         "gust_product": "gefs_0p50b",
         "gust_required": False,
+        "subset_padding_degrees": 0.75,
     }
 
 def compatibility_hours(model, run):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,hashlib,json,math
+import argparse,hashlib,json,math,os
 from collections import Counter
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -140,6 +140,16 @@ def audit_eps_hourly_source(source,run,expected_members=20):
         "failure_count":len(failures),
     }
     return failures,summary
+
+def full_horizon_coverage_issue(archive_summary, full_validation):
+    """Classify archive coverage without hiding required-horizon gaps."""
+    if archive_summary.get("horizon_status") != "complete" and full_validation:
+        return ("FULL_HORIZON_REQUIRED_COVERAGE_INCOMPLETE", "ERROR",
+                "Full-model validation requires complete provider-native horizon coverage for every required model cycle.")
+    if archive_summary.get("status") != "complete":
+        return ("FULL_HORIZON_ARCHIVE_PARTIAL", "WARN",
+                "Full-horizon collection has explicit gaps or optional-field gaps; legacy analysis coverage is unchanged.")
+    return None
 
 def make_report(kind,now,sources,issues,usable,extra):
     counts=Counter(x["severity"] for x in issues)
@@ -504,10 +514,11 @@ def audit_models(path,cfg,now):
         from full_horizon_contract import validate_archive
         try:
             archive_summary = validate_archive(d)
-            if archive_summary["status"] != "complete":
-                issues.append(issue("FULL_HORIZON_ARCHIVE_PARTIAL", "WARN", "archive", "coverage",
-                    "Full-horizon collection has explicit gaps; legacy analysis coverage is unchanged.",
-                    coverage=archive_summary))
+            coverage_issue = full_horizon_coverage_issue(
+                archive_summary, os.getenv("FULL_VALIDATION", "").lower() == "true")
+            if coverage_issue:
+                code, severity, impact = coverage_issue
+                issues.append(issue(code, severity, "archive", "coverage", impact, coverage=archive_summary))
         except Exception as exc:
             issues.append(issue("FULL_HORIZON_ARCHIVE_INVALID", "ERROR", "archive", "integrity",
                 "Archive identities failed revalidation.", reason=str(exc)))

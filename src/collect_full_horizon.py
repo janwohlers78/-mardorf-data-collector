@@ -16,6 +16,7 @@ class PublicationUnavailable(RuntimeError):
 def now(): return datetime.now(timezone.utc).isoformat()
 def noaa_requests(model,run,lead):
  day,hh=run.strftime("%Y%m%d"),run.strftime("%H")
+ contract=None
  if model=="GFS":
   products=[("gfs_0p25","filter_gfs_0p25.pl",f"/gfs.{day}/{hh}/atmos",f"gfs.t{hh}z.pgrb2.0p25.f{lead:03d}",["UGRD","VGRD","GUST","APCP"],True)]
  else:
@@ -29,7 +30,10 @@ def noaa_requests(model,run,lead):
              ("gefs_0p50b","filter_gefs_atmos_0p50b.pl",f"/gefs.{day}/{hh}/atmos/pgrb2bp5",f"gec00.t{hh}z.pgrb2b.0p50.f{lead:03d}",["GUST"],contract["gust_required"])]
  out=[]
  for product,script,directory,filename,variables,required in products:
-  q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"","leftlon":"9.0418","rightlon":"9.6418","toplat":"52.7942","bottomlat":"52.1942"}; q.update({"var_"+v:"on" for v in variables})
+  pad=contract["subset_padding_degrees"] if contract is not None else 0.30
+  q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"",
+     "leftlon":f"{ext.LON-pad:.4f}","rightlon":f"{ext.LON+pad:.4f}",
+     "toplat":f"{ext.LAT+pad:.4f}","bottomlat":f"{ext.LAT-pad:.4f}"}; q.update({"var_"+v:"on" for v in variables})
   out.append((product,"https://nomads.ncep.noaa.gov/cgi-bin/"+script+"?"+urlencode(q),required))
  return out
 def _download(session,url,required,far_gefs):

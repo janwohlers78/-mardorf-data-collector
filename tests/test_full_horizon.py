@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 import full_horizon_contract as c
 import collect_full_horizon as fetch
@@ -86,6 +87,14 @@ class HorizonTests(unittest.TestCase):
         self.assertIn("var_GUST=on", queries[1][1])
         self.assertTrue(queries[0][2])
         self.assertFalse(queries[1][2])
+        near = parse_qs(urlparse(fetch.noaa_requests("GEFS-control", run, 240)[0][1]).query)
+        far = parse_qs(urlparse(queries[0][1]).query)
+        self.assertAlmostEqual(float(near["rightlon"][0]) - float(near["leftlon"][0]), 0.60, places=3)
+        self.assertAlmostEqual(float(far["rightlon"][0]) - float(far["leftlon"][0]), 1.50, places=3)
+        self.assertLess(float(far["bottomlat"][0]), fetch.ext.LAT)
+        self.assertGreater(float(far["toplat"][0]), fetch.ext.LAT)
+        far_probe = parse_qs(urlparse(extra.gefs_far_url("2026092500", 840)).query)
+        self.assertAlmostEqual(float(far_probe["rightlon"][0]) - float(far_probe["leftlon"][0]), 1.50, places=3)
 
     def test_gefs_far_horizon_keeps_wind_when_secondary_gust_product_lags(self):
         run = datetime(2026, 9, 25, 6, tzinfo=timezone.utc)
