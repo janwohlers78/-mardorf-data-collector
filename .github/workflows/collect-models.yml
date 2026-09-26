@@ -2,6 +2,11 @@
 name: Collect model source data
 
 on:
+  push:
+    branches:
+      - phase2-icon-tier-a-routine
+    paths:
+      - '.github/workflows/collect-models.yml'
   schedule:
     - cron: '23 */3 * * *'
   workflow_dispatch:
@@ -33,7 +38,7 @@ jobs:
     timeout-minutes: 65
     env:
       COLLECTOR_MODEL_FILE: work/model_snapshot.json
-      FULL_VALIDATION: ${{ inputs.test_mode != true && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.watchdog == true || inputs.full_validation == true))) }}
+      FULL_VALIDATION: ${{ inputs.test_mode != true && (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.watchdog == true || inputs.full_validation == true))) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -41,11 +46,17 @@ jobs:
 
       - name: Check whether routine model collection is due
         id: due
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.watchdog == true)
+        if: github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.watchdog == true)
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
-        run: python3 src/check_collection_due.py --kind models --max-age-minutes 150
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            echo "reason=one_time_tier_a_live_proof" >> "$GITHUB_OUTPUT"
+          else
+            python3 src/check_collection_due.py --kind models --max-age-minutes 150
+          fi
 
       - name: Report skipped routine model trigger
         if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.watchdog == true)) && steps.due.outputs.due != 'true'
