@@ -284,6 +284,54 @@ class HorizonTests(unittest.TestCase):
         self.assertEqual(source["lead_status"], {})
         self.assertEqual(gefs["missing_leads"], [])
 
+    def test_mixed_new_icon_cycle_reconciles_legacy_carried_ecmwf_sidecar_without_refetch(self):
+        d, _ = self.collect(hour=6)
+        ecmwf_run = c.utc(d["models"]["ECMWF-IFS"][0]["run_time_utc"])
+        source = d["full_horizon_archive"]["sources"]["ECMWF-IFS"]
+        obsolete = [126, 132, 138, 144]
+        source["records"].extend(rows("ECMWF-IFS", ecmwf_run, obsolete))
+        for h in obsolete:
+            source["lead_status"][str(h)] = {"status": "published", "checked_at_utc": (ecmwf_run+timedelta(hours=7)).isoformat()}
+        source["requested_extension_leads"] = c.extension_leads("ECMWF-IFS", ecmwf_run) + obsolete
+        source["acquisition_grid_version"] = "legacy-pre-grid-v2"
+        source["retention_grid_version"] = "legacy-pre-grid-v2"
+        source["acquisition_max_lead_hours"] = 144
+        source["actual_max_lead"] = 144
+
+        icon_old = c.utc(d["models"]["ICON-D2"][0]["run_time_utc"])
+        icon_new = icon_old + timedelta(hours=3)
+        d["models"]["ICON-D2"] = rows("ICON-D2", icon_new, c.acquisition_leads("ICON-D2", icon_new))
+        d["provider_cycle_gate"] = {
+            "checked_at_utc": (icon_new+timedelta(hours=4)).isoformat(),
+            "models": {model: {"action": ("fetch" if model == "ICON-D2" else "carry_forward")} for model in c.MODELS},
+        }
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(fetch, "fetch_noaa", side_effect=AssertionError("provider refetch forbidden")) as noaa_fetch, \
+             patch.object(fetch, "fetch_ifs", side_effect=AssertionError("provider refetch forbidden")) as ifs_fetch:
+            path = Path(td)/"payload.json"
+            summary = fetch.collect(d, path)
+            self.assertEqual(json.loads(path.read_text()), d)
+
+        noaa_fetch.assert_not_called()
+        ifs_fetch.assert_not_called()
+        self.assertEqual(summary["horizon_status"], "complete")
+        icon_source = d["full_horizon_archive"]["sources"]["ICON-D2"]
+        self.assertEqual(icon_source["run_time_utc"], icon_new.isoformat())
+        self.assertEqual(icon_source["target_max_hours"], 48)
+
+        carried = d["full_horizon_archive"]["sources"]["ECMWF-IFS"]
+        expected = c.extension_leads("ECMWF-IFS", ecmwf_run)
+        self.assertEqual(carried["requested_extension_leads"], expected)
+        self.assertEqual(carried["acquisition_grid_version"], c.ACQUISITION_GRID_VERSION)
+        self.assertEqual(carried["retention_grid_version"], c.RETENTION_GRID_VERSION)
+        self.assertEqual(carried["acquisition_max_lead_hours"], max(c.acquisition_leads("ECMWF-IFS", ecmwf_run)))
+        self.assertEqual([r["forecast_lead_hours"] for r in carried["records"]], expected)
+        self.assertEqual(carried["actual_max_lead"], 120)
+        reconciliation = carried["carry_forward_contract_reconciliation"]
+        self.assertEqual(reconciliation["method_version"], "carry-forward-contract-reconciliation-v1")
+        self.assertEqual(reconciliation["dropped_obsolete_extension_leads"], obsolete)
+
     def test_partial_provider_preserves_successes_and_marks_gap(self):
         d, summary = self.collect(True)
         self.assertEqual(summary["sources"]["GFS"]["missing_leads"], [180])

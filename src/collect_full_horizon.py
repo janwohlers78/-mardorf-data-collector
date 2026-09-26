@@ -184,6 +184,73 @@ def cycle_gate_action(payload,model):
  entry=(plan.get("models") or {}).get(model) if isinstance(plan.get("models"),dict) else None
  return entry.get("action") if isinstance(entry,dict) else "fetch"
 
+def reconcile_carried_source(prior,model,run):
+ """Rebind a verified carried sidecar to the current acquisition contract.
+
+ Carry-forward reuses provider bytes, not stale policy metadata. This matters
+ when the acquisition grid changed after the archived cycle was first written:
+ obsolete extension rows must not make a same-cycle carry-forward fail the
+ current full-horizon contract or force a provider re-download.
+ """
+ source=json.loads(json.dumps(prior))
+ leads=extension_leads(model,run);allowed=set(leads)
+ records=source.get("records",[])
+ if not isinstance(records,list):
+  raise RuntimeError(f"{model} carried full-horizon records are not a list")
+ kept=[];dropped=[]
+ for record in records:
+  if not isinstance(record,dict):
+   raise RuntimeError(f"{model} carried full-horizon record is not an object")
+  h=record.get("forecast_lead_hours")
+  if isinstance(h,bool) or not isinstance(h,int):
+   raise RuntimeError(f"{model} carried full-horizon record has invalid lead {h!r}")
+  if h in allowed: kept.append(record)
+  else: dropped.append(h)
+ source["records"]=kept
+ prior_status=source.get("lead_status")
+ if not isinstance(prior_status,dict): prior_status={}
+ source["lead_status"]={str(h):prior_status[str(h)] for h in leads if str(h) in prior_status}
+ errors=source.get("errors")
+ if isinstance(errors,list):
+  filtered=[]
+  for item in errors:
+   item_leads=item.get("leads") if isinstance(item,dict) else None
+   if not isinstance(item_leads,list):
+    filtered.append(item);continue
+   retained=[h for h in item_leads if isinstance(h,int) and not isinstance(h,bool) and h in allowed]
+   if retained:
+    clone=json.loads(json.dumps(item));clone["leads"]=retained;filtered.append(clone)
+  source["errors"]=filtered
+ previous={
+  "acquisition_grid_version":source.get("acquisition_grid_version"),
+  "retention_grid_version":source.get("retention_grid_version"),
+  "requested_extension_leads":source.get("requested_extension_leads"),
+  "acquisition_max_lead_hours":source.get("acquisition_max_lead_hours"),
+ }
+ expected_max=maximum_hours(model,run);policy=acquisition_policy(model,run)
+ source.update(
+  run_time_utc=run.isoformat(),
+  target_max_hours=expected_max,
+  expected_max_lead_for_cycle=expected_max,
+  provider_native_horizon_hours=policy["provider_native_horizon_hours"],
+  compatibility_horizon_hours=policy["compatibility_horizon_hours"],
+  acquisition_grid_version=policy["acquisition_grid_version"],
+  retention_grid_version=policy["retention_grid_version"],
+  acquisition_max_lead_hours=policy["acquisition_max_lead_hours"],
+  requested_extension_leads=leads,
+ )
+ if dropped or previous["acquisition_grid_version"]!=policy["acquisition_grid_version"] or previous["retention_grid_version"]!=policy["retention_grid_version"] or previous["requested_extension_leads"]!=leads or previous["acquisition_max_lead_hours"]!=policy["acquisition_max_lead_hours"]:
+  source["carry_forward_contract_reconciliation"]={
+   "method_version":"carry-forward-contract-reconciliation-v1",
+   "reconciled_at_utc":now(),
+   "previous_contract":previous,
+   "current_acquisition_grid_version":policy["acquisition_grid_version"],
+   "current_retention_grid_version":policy["retention_grid_version"],
+   "current_requested_extension_leads":leads,
+   "dropped_obsolete_extension_leads":sorted(set(dropped)),
+  }
+ return source
+
 def collect(payload,path,workers=4):
  previous=payload.get("full_horizon_archive") if isinstance(payload.get("full_horizon_archive"),dict) else {}
  previous_sources=previous.get("sources") if isinstance(previous.get("sources"),dict) else {}
@@ -203,7 +270,7 @@ def collect(payload,path,workers=4):
      f"{model} cycle gate requested {action} without matching prior full-horizon source")
    if action=="supplemental_retry" and model!="GEFS-control":
     raise RuntimeError(f"supplemental_retry is only valid for GEFS-control, got {model}")
-   source=json.loads(json.dumps(prior))
+   source=reconcile_carried_source(prior,model,run)
    source["cycle_gate_action"]=action
    source["cycle_gate_checked_at_utc"]=(payload.get("provider_cycle_gate") or {}).get("checked_at_utc")
    sources[model]=source
