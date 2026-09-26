@@ -1,0 +1,106 @@
+name: One-time ICON Tier-A live proof
+
+on:
+  push:
+    branches:
+      - phase2-icon-tier-a-routine
+    paths:
+      - '.github/workflows/tier-a-live-proof.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tier-a-live-proof
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      COLLECTOR_MODEL_FILE: work/model_snapshot.json
+      FULL_VALIDATION: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools
+          grib_ls -V
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-runtime.txt
+      - name: Fetch all production base providers
+        shell: bash
+        run: |
+          set +e
+          for model in ICON-D2 GFS GEFS-control ICON-EU ICON-D2-EPS; do
+            echo "=== base $model ==="
+            timeout --signal=TERM --kill-after=15s 6m python src/provider_fetch.py --model "$model" --stage base
+            echo "rc_$model=$?"
+          done
+          last=1
+          for source in azure google ecmwf; do
+            echo "=== ECMWF base $source ==="
+            ECMWF_OPEN_DATA_SOURCE="$source" timeout --signal=TERM --kill-after=15s 7m python src/provider_fetch.py --model ECMWF-IFS --stage base
+            rc=$?
+            if [ "$rc" -eq 0 ]; then last=0; break; fi
+            last=$rc
+          done
+          set -e
+          exit "$last"
+      - name: Extend production medium-range paths
+        shell: bash
+        run: |
+          set +e
+          for model in GFS GEFS-control ICON-EU; do
+            echo "=== extension $model ==="
+            timeout --signal=TERM --kill-after=15s 8m python src/provider_fetch.py --model "$model" --stage extension
+            echo "rc_$model=$?"
+          done
+          last=1
+          for source in azure google ecmwf; do
+            echo "=== ECMWF extension $source ==="
+            ECMWF_OPEN_DATA_SOURCE="$source" timeout --signal=TERM --kill-after=15s 7m python src/provider_fetch.py --model ECMWF-IFS --stage extension
+            rc=$?
+            if [ "$rc" -eq 0 ]; then last=0; break; fi
+            last=$rc
+          done
+          set -e
+          exit "$last"
+      - name: Attach Tier-A fields
+        run: timeout --signal=TERM --kill-after=15s 12m python src/collect_icon_tier_a.py --workers 4
+      - name: Archive remaining native horizons
+        run: timeout --signal=TERM --kill-after=15s 15m python src/collect_full_horizon.py
+      - name: Integrity audit
+        run: |
+          python src/audit_integrity.py --kind models --input work/model_snapshot.json --json-out work/model_integrity.json --md-out work/model_integrity.md
+          cat work/model_integrity.md >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY'
+          import json
+          d=json.load(open('work/model_integrity.json'))
+          if d['error_count']:
+              raise SystemExit(1)
+          PY
+      - name: Tier-A live summary
+        run: |
+          python - <<'PY'
+          import json, os
+          d=json.load(open('work/model_snapshot.json'))
+          a=d.get('icon_tier_a_acquisition') or {}
+          print(json.dumps(a,indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write("\n## Tier-A acquisition\n\n")
+              f.write(json.dumps({k:v for k,v in a.items() if k!='diagnostics'},indent=2))
+              f.write("\n")
+          PY
+      - name: Transfer verified live proof to private repository
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO: janwohlers78/mardorf-kitevorhersage
+        run: python src/push_private.py --kind models --file work/model_snapshot.json --integrity-json work/model_integrity.json --integrity-md work/model_integrity.md
