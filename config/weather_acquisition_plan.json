@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "design_not_yet_activated",
+  "status": "phase2_icon_live_probe_validated_not_routine",
   "owner": "public_collector_acquisition_private_normalization",
   "parameters": [
     {
@@ -187,5 +187,60 @@
     "AIFS",
     "AIFS-ENS"
   ],
-  "analysis_changes": false
+  "analysis_changes": false,
+  "provider_activation": {
+    "DWD_ICON": {
+      "status": "live_probe_validated_not_routine",
+      "models": [
+        "ICON-D2",
+        "ICON-EU"
+      ],
+      "method_version": "phase2-icon-parameter-live-probe-v1",
+      "validation_run_id": 36211350091,
+      "validated_lead_hours": 12,
+      "validated_at_utc": "2026-09-26T02:21:06Z",
+      "parameters": [
+        "t_2m",
+        "td_2m",
+        "relhum_2m",
+        "pmsl",
+        "ps",
+        "tot_prec",
+        "clct",
+        "aswdir_s",
+        "aswdifd_s",
+        "cape_ml",
+        "cin_ml"
+      ],
+      "received_parameters_per_model": 11,
+      "missing_parameters_per_model": 0,
+      "total_response_bytes": 27822525,
+      "model_response_bytes": {
+        "ICON-D2": 17816239,
+        "ICON-EU": 10006286
+      },
+      "temporal_semantics_verified": {
+        "instant": [
+          "t_2m",
+          "td_2m",
+          "relhum_2m",
+          "pmsl",
+          "ps",
+          "clct",
+          "cape_ml",
+          "cin_ml"
+        ],
+        "accumulation": {
+          "tot_prec": "0-12"
+        },
+        "average": {
+          "aswdir_s": "0-12",
+          "aswdifd_s": "0-12"
+        }
+      },
+      "routine_collection_enabled": false,
+      "analysis_changes": false,
+      "note": "Bounded provider proof only. Broad routine activation waits for runtime/download-budget design and Archive-v2 integration."
+    }
+  }
 }
