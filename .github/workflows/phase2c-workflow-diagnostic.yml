@@ -1,0 +1,21 @@
+name: Phase 2c workflow diagnostic
+
+on:
+  push:
+    branches:
+      - phase2c-noaa-live-canary-run
+    paths:
+      - .github/workflows/phase2c-workflow-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Compile
+        run: python3 -m compileall -q src
