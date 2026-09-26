@@ -146,10 +146,15 @@ class HorizonTests(unittest.TestCase):
         class Nearest(list):
             point = {"latitude": 52.5, "longitude": 9.25}
 
-        nearest = Nearest([("10u", "246", 3.0), ("10v", "246", 4.0), ("tp", "240-246", 0.2)])
+        values={
+            "10u":[{"shortName":"10u","stepRange":"246","value":3.0}],
+            "10v":[{"shortName":"10v","stepRange":"246","value":4.0}],
+            "tp":[{"shortName":"tp","stepRange":"240-246","value":0.2}],
+        }
+        point={"latitude":52.5,"longitude":9.25,"selection":"ecCodes_nearest_grid_point"}
         with patch.object(fetch.requests, "Session", Session), \
              patch.object(fetch.ext, "assert_grib_valid_time"), \
-             patch.object(fetch.ext, "nearest", return_value=nearest):
+             patch.object(fetch.noaa, "extract_native_values", return_value=(values,point)):
             row = fetch.fetch_noaa("GEFS-control", run, 246)[0]
         self.assertAlmostEqual(row["derived"]["wind_speed_ms"], 5.0)
         self.assertNotIn("gust_ms", row["derived"])
