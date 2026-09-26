@@ -187,7 +187,7 @@ def cycle_gate_action(payload,model):
 def collect(payload,path,workers=4):
  previous=payload.get("full_horizon_archive") if isinstance(payload.get("full_horizon_archive"),dict) else {}
  previous_sources=previous.get("sources") if isinstance(previous.get("sources"),dict) else {}
- sources,jobs={},[]
+ sources,jobs,supplement_jobs={},[],[]
  for model in MODELS:
   core=payload.get("models",{}).get(model,[])
   if not core:
@@ -196,15 +196,19 @@ def collect(payload,path,workers=4):
    continue
   run=ext.cycle_from_existing(payload,model)
   action=cycle_gate_action(payload,model)
-  if action=="carry_forward":
+  if action in ("carry_forward","supplemental_retry"):
    prior=previous_sources.get(model)
    if not isinstance(prior,dict) or prior.get("run_time_utc")!=run.isoformat():
     raise RuntimeError(
-     f"{model} cycle gate requested carry-forward without matching prior full-horizon source")
+     f"{model} cycle gate requested {action} without matching prior full-horizon source")
+   if action=="supplemental_retry" and model!="GEFS-control":
+    raise RuntimeError(f"supplemental_retry is only valid for GEFS-control, got {model}")
    source=json.loads(json.dumps(prior))
-   source["cycle_gate_action"]="carry_forward"
+   source["cycle_gate_action"]=action
    source["cycle_gate_checked_at_utc"]=(payload.get("provider_cycle_gate") or {}).get("checked_at_utc")
    sources[model]=source
+   if action=="supplemental_retry":
+    supplement_jobs.extend((model,h) for h in pgrb2b_missing_leads(source))
    continue
   source={"records":[],"errors":[],"lead_status":{}}
   sources[model]=source
@@ -224,7 +228,38 @@ def collect(payload,path,workers=4):
   )
   for h in leads:source["lead_status"][str(h)]={"status":"pending"}
   jobs.extend((model,leads[i:i+6]) for i in range(0,len(leads),6)) if model=="ECMWF-IFS" else jobs.extend((model,[h]) for h in leads)
- payload["full_horizon_archive"]={"method_version":VERSION,"started_at_utc":now(),"sources":sources};checkpoint(payload,path)
+
+ payload["full_horizon_archive"]={"method_version":VERSION,"started_at_utc":now(),"sources":sources}
+ checkpoint(payload,path)
+
+ if supplement_jobs:
+  supplement_results=[]
+  with ThreadPoolExecutor(max_workers=workers) as pool:
+   futures={}
+   for model,lead in supplement_jobs:
+    source=sources[model]
+    record=next((r for r in source.get("records",[]) if int(r.get("forecast_lead_hours",-1))==lead),None)
+    if record is None:
+     supplement_results.append({"lead_hours":lead,"status":"missing_archived_record"})
+     continue
+    run=utc(source["run_time_utc"])
+    futures[pool.submit(retry_gefs_pgrb2b,record,run)]=(model,lead)
+   for future in as_completed(futures):
+    model,lead=futures[future]
+    try:
+     updated=future.result()
+     rows=sources[model]["records"]
+     idx=next(i for i,r in enumerate(rows) if int(r.get("forecast_lead_hours",-1))==lead)
+     rows[idx]=updated
+     supplement_results.append({"lead_hours":lead,"status":"received","checked_at_utc":now()})
+    except Exception as exc:
+     supplement_results.append({
+      "lead_hours":lead,"status":"fetch_error","checked_at_utc":now(),
+      "exception_type":type(exc).__name__,"reason":str(exc)[:500],
+     })
+  update_pgrb2b_retry_state(sources["GEFS-control"],"supplemental_retry",supplement_results)
+  checkpoint(payload,path)
+
  with ThreadPoolExecutor(max_workers=workers) as pool:
   fs={pool.submit(fetch_ifs,payload,l) if m=="ECMWF-IFS" else pool.submit(fetch_noaa,m,utc(sources[m]["run_time_utc"]),l[0]):(m,l) for m,l in jobs}
   for f in as_completed(fs):
@@ -247,7 +282,12 @@ def collect(payload,path,workers=4):
     for h in l:sources[m]["lead_status"][str(h)]={"status":status,"checked_at_utc":now(),"reason":str(exc)[:400]}
     sources[m]["errors"].append({"leads":l,"type":type(exc).__name__,"reason":str(exc)[:600],"retrieval_status":status})
    checkpoint(payload,path)
+
+ if cycle_gate_action(payload,"GEFS-control")=="fetch" and "GEFS-control" in sources:
+  update_pgrb2b_retry_state(sources["GEFS-control"],"fetch")
+  checkpoint(payload,path)
  return payload["full_horizon_archive"]["coverage"]
+
 def archive_exit_code(coverage):
  return 0 if coverage.get("horizon_status")=="complete" else 1
 
