@@ -36,9 +36,15 @@ def noaa_requests(model,run,lead):
  out=[]
  for product,script,directory,filename,variables,required in products:
   pad=contract["subset_padding_degrees"] if contract is not None else 0.30
-  q={"file":filename,"dir":directory,"lev_10_m_above_ground":"on","lev_surface":"on","subregion":"",
+  q={"file":filename,"dir":directory,"subregion":"",
      "leftlon":f"{ext.LON-pad:.4f}","rightlon":f"{ext.LON+pad:.4f}",
      "toplat":f"{ext.LAT+pad:.4f}","bottomlat":f"{ext.LAT-pad:.4f}"}; q.update({"var_"+v:"on" for v in variables})
+  # Wind-bearing products need their native wind/surface levels. The GEFS
+  # secondary pgrb2b weather product does not support 10 m AGL; sending that
+  # inherited flag makes NOMADS return HTTP 500 even though DPT/CAPE/CIN are
+  # available. Its valid levels are added by the product-specific registry.
+  if product!="gefs_0p50b":
+   q.update({"lev_10_m_above_ground":"on","lev_surface":"on"})
   noaa.add_weather_flags(q,product)
   out.append((product,"https://nomads.ncep.noaa.gov/cgi-bin/"+script+"?"+urlencode(q),required))
  return out
