@@ -12,6 +12,7 @@ import bz2
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,19 +36,23 @@ def utc(value):
 
 def url_inventory(provider_model,cycle,param):
     directory,hrefs=dwd.directory_hrefs(provider_model,cycle[-2:],param)
-    prefix=cycle
-    return directory,{int(m.group(1)):href for href in hrefs
-                      if prefix in href and param in href
-                      for m in [__import__("re").search(r"_(\d{3})_",href)]
-                      if m}
+    out={}
+    for href in sorted(hrefs):
+        if cycle not in href or param not in href or "regular-lat-lon" not in href:
+            continue
+        m=re.search(r"_(\d{3})_",href)
+        if m:
+            out.setdefault(int(m.group(1)),href)
+    return directory,out
 
 
 def fetch_field(provider_model,cycle,lead,param,url,run,valid):
     started=time.monotonic()
-    stable={"parameter_native":param,"availability_status":"missing"}
+    stable={"parameter_native":param,"value":None,"availability_status":"missing","error_type":"OptionalFieldUnavailable"}
     diagnostic={"parameter":param,"lead_hours":lead,"status":"missing"}
     if not url:
-        diagnostic.update(reason="not_offered_for_cycle_or_lead",elapsed_seconds=round(time.monotonic()-started,3))
+        stable["availability_status"]="not_offered"
+        diagnostic.update(status="not_offered",reason="not_offered_for_cycle_or_lead",elapsed_seconds=round(time.monotonic()-started,3))
         return stable,diagnostic,None
     diagnostic["source_url"]=url
     try:
