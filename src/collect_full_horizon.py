@@ -92,6 +92,81 @@ def fetch_noaa(model,run,lead):
  if u is None or v is None: raise ValueError("required U/V absent from returned product")
  if gust is None and not(model=="GEFS-control" and lead>240): raise ValueError("required gust absent from returned product")
  return [{"model":model,"run_time_utc":run.isoformat(),"forecast_lead_hours":lead,"valid_time_utc":(run+timedelta(hours=lead)).isoformat(),"retrieved_at_utc":now(),"provider_product":"+".join(x["product"] for x in evidence),"source":"NOAA/NCEP NOMADS GRIB2 full horizon","source_urls":[x["url"] for x in evidence],"grib_evidence":evidence,"optional_product_errors":optional_errors,"field_availability":{"wind_uv":True,"gust":gust is not None},"weather_context_availability":weather_availability,"forecast_coordinate_or_grid_point":point,"values":vals,"derived":ext.derived(u,v,gust)}]
+PGRB2B_RETRY_DELAY_HOURS=3
+PGRB2B_MAX_RETRIES=1
+
+def pgrb2b_missing_leads(source):
+ out=[]
+ for record in source.get("records",[]):
+  errors=record.get("optional_product_errors") if isinstance(record.get("optional_product_errors"),list) else []
+  if any(isinstance(x,dict) and x.get("product")=="gefs_0p50b" for x in errors):
+   try: out.append(int(record["forecast_lead_hours"]))
+   except Exception: pass
+ return sorted(set(out))
+
+def retry_gefs_pgrb2b(record,run):
+ lead=int(record["forecast_lead_hours"])
+ candidates=[x for x in noaa_requests("GEFS-control",run,lead) if x[0]=="gefs_0p50b"]
+ if len(candidates)!=1:
+  raise RuntimeError(f"GEFS pgrb2b request identity missing at lead {lead}: {candidates}")
+ product,url,_required=candidates[0]
+ out=json.loads(json.dumps(record))
+ with requests.Session() as session,tempfile.TemporaryDirectory() as td:
+  session.headers.update({"User-Agent":"mardorf-data-collector/gefs-pgrb2b-supplement-v1"})
+  content=_download(session,url,False,True)
+  path=Path(td)/(product+".grib2");path.write_bytes(content)
+  ext.assert_grib_valid_time(path,run,run+timedelta(hours=lead),f"GEFS supplemental pgrb2b {lead}")
+  source_sha=hashlib.sha256(content).hexdigest()
+  product_values,product_point=noaa.extract_native_values(
+   path,ext.LAT,ext.LON,source_sha256=source_sha,product=product)
+ existing_point=out.get("forecast_coordinate_or_grid_point")
+ if isinstance(existing_point,dict) and existing_point!=product_point:
+  raise ValueError("GEFS supplemental pgrb2b extraction point differs from archived 0.50a point")
+ vals=out.setdefault("values",{})
+ for name,items in product_values.items():
+  vals[name]=items
+ availability_map=out.setdefault("weather_context_availability",{})
+ availability_map[product]=noaa.weather_availability(product,product_values)
+ evidence=[x for x in (out.get("grib_evidence") or []) if not(isinstance(x,dict) and x.get("product")==product)]
+ evidence.append({"product":product,"url":url,"sha256":source_sha,"response_bytes":len(content)})
+ out["grib_evidence"]=evidence
+ errors=[x for x in (out.get("optional_product_errors") or []) if not(isinstance(x,dict) and x.get("product")==product)]
+ out["optional_product_errors"]=errors
+ urls=[x for x in (out.get("source_urls") or []) if x!=url]
+ urls.append(url);out["source_urls"]=urls
+ out["provider_product"]="+".join(x["product"] for x in evidence if isinstance(x,dict) and x.get("product"))
+ out["retrieved_at_utc"]=now()
+ availability.stamp_rows([out],observed_at=out["retrieved_at_utc"],replace_row_time=True)
+ return out
+
+def update_pgrb2b_retry_state(source,action,attempt_results=None):
+ missing=pgrb2b_missing_leads(source)
+ previous=source.get("gefs_pgrb2b_supplemental_retry")
+ previous=previous if isinstance(previous,dict) else {}
+ attempts=int(previous.get("attempts",0) or 0)
+ if action=="supplemental_retry":
+  attempts+=1
+ status="not_needed";next_retry=None
+ if missing:
+  if attempts<PGRB2B_MAX_RETRIES:
+   status="pending"
+   next_retry=(datetime.now(timezone.utc)+timedelta(hours=PGRB2B_RETRY_DELAY_HOURS)).isoformat()
+  else:
+   status="exhausted"
+ elif action=="supplemental_retry":
+  status="complete"
+ source["gefs_pgrb2b_supplemental_retry"]={
+  "method_version":"gefs-pgrb2b-bounded-supplement-v1",
+  "status":status,
+  "attempts":attempts,
+  "maximum_attempts":PGRB2B_MAX_RETRIES,
+  "retry_delay_hours":PGRB2B_RETRY_DELAY_HOURS,
+  "next_retry_not_before_utc":next_retry,
+  "missing_leads_hours":missing,
+  "last_attempt_results":attempt_results or [],
+  "updated_at_utc":now(),
+ }
+
 def fetch_ifs(payload,leads):
  rows=ext.fetch_ifs(payload,requested_leads=leads)
  for r in rows:r.update(retrieved_at_utc=now(),provider_product="ifs_oper_fc_0p25")
