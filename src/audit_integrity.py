@@ -33,6 +33,94 @@ def provider_max(model,run_hour,cfg):
 def desired_leads(model,cfg):
     return [int(x) for x in cfg["model_policy"]["project_desired_leads"][model]]
 
+def gefs_mature_cycle_archive_exception(payload,run,now):
+    """Validate evidence that an over-age GEFS cycle is the newest mature full-horizon cycle.
+
+    This exception affects only whether nominal forecast-age excess is fatal.
+    It never makes the selected GEFS run count as current for the independent
+    family gate.
+    """
+    if os.getenv("FULL_VALIDATION","").lower()!="true" or run is None:
+        return False,{"reason":"not_full_validation"}
+    evidence=(payload.get("provider_selection_evidence") or {}).get("GEFS-control")
+    if not isinstance(evidence,dict):
+        return False,{"reason":"selection_evidence_missing"}
+    if evidence.get("method_version")!="gefs-newest-mature-cycle-selection-v1":
+        return False,{"reason":"selection_evidence_version_invalid"}
+    if evidence.get("full_horizon_publication_required") is not True:
+        return False,{"reason":"far_horizon_publication_not_required"}
+    selected=dt(evidence.get("selected_cycle_run_time_utc"))
+    if selected!=run:
+        return False,{"reason":"selected_cycle_mismatch",
+                      "evidence_cycle":selected.isoformat() if selected else None,
+                      "record_cycle":run.isoformat()}
+    try:
+        from full_horizon_contract import maximum_hours
+        selected_expected=int(maximum_hours("GEFS-control",run))
+        selected_probe=int(evidence.get("selected_publication_probe_lead"))
+        selected_declared=int(evidence.get("selected_expected_max_lead_hours"))
+    except Exception as exc:
+        return False,{"reason":"selected_terminal_horizon_invalid","detail":str(exc)}
+    if selected_probe!=selected_expected or selected_declared!=selected_expected:
+        return False,{"reason":"selected_terminal_probe_mismatch",
+                      "expected_terminal_lead":selected_expected,
+                      "declared_terminal_lead":selected_declared,
+                      "publication_probe_lead":selected_probe}
+    attempts=evidence.get("attempts")
+    if not isinstance(attempts,list):
+        return False,{"reason":"selection_attempts_missing"}
+    by_cycle={}
+    for item in attempts:
+        if not isinstance(item,dict):
+            continue
+        cyc=dt(item.get("cycle_run_time_utc"))
+        if cyc is not None:
+            by_cycle[cyc]=item
+    selected_attempt=by_cycle.get(run)
+    if not selected_attempt or selected_attempt.get("status")!="published":
+        return False,{"reason":"selected_cycle_not_proven_published"}
+    if int(selected_attempt.get("publication_probe_lead",-1))!=selected_expected:
+        return False,{"reason":"selected_attempt_probe_not_terminal"}
+
+    # GEFS scheduled cycles are 6-hourly. Every newer cycle that is already due
+    # must have been explicitly probed at its own native terminal horizon.
+    newer_due=[]
+    cycle=run+timedelta(hours=6)
+    while cycle<=now:
+        newer_due.append(cycle)
+        cycle+=timedelta(hours=6)
+    if not newer_due:
+        return False,{"reason":"no_newer_due_cycle_to_explain_age_excess"}
+    newer_evidence=[]
+    for cyc in newer_due:
+        item=by_cycle.get(cyc)
+        if not item:
+            return False,{"reason":"newer_due_cycle_not_probed","cycle_run_time_utc":cyc.isoformat()}
+        try:
+            from full_horizon_contract import maximum_hours
+            terminal=int(maximum_hours("GEFS-control",cyc))
+            probe=int(item.get("publication_probe_lead"))
+        except Exception as exc:
+            return False,{"reason":"newer_cycle_probe_invalid","cycle_run_time_utc":cyc.isoformat(),"detail":str(exc)}
+        if probe!=terminal:
+            return False,{"reason":"newer_cycle_not_probed_at_terminal_horizon",
+                          "cycle_run_time_utc":cyc.isoformat(),
+                          "expected_terminal_lead":terminal,"publication_probe_lead":probe}
+        if item.get("status")!="not_published":
+            return False,{"reason":"newer_cycle_not_proven_immature",
+                          "cycle_run_time_utc":cyc.isoformat(),"status":item.get("status")}
+        newer_evidence.append({"cycle_run_time_utc":cyc.isoformat(),
+                               "terminal_probe_lead":terminal,
+                               "status":"not_published",
+                               "http_status":item.get("http_status")})
+    return True,{
+        "reason":"newest_mature_full_horizon_cycle_proven",
+        "selection_method_version":evidence.get("method_version"),
+        "selected_cycle_run_time_utc":run.isoformat(),
+        "selected_terminal_probe_lead":selected_expected,
+        "newer_due_cycles":newer_evidence,
+    }
+
 def audit_eps_hourly_source(source,run,expected_members=20):
     failures=[];summary=None
     if not isinstance(source,dict):
@@ -464,6 +552,7 @@ def audit_models(path,cfg,now):
                     "All recorded attempts for a requested acquisition stage failed; success in another stage does not mask this failure.",
                     stage=stage,attempts=stage_attempts))
         run_age=None;age_limit=float(cfg["model_policy"]["maximum_run_age_hours"][model])
+        mature_archive_exception=False;mature_archive_evidence=None
         if run:
             run_age=(now-run).total_seconds()/3600
             future_tol=float(cfg["model_policy"]["run_timestamp_future_tolerance_minutes"])/60
@@ -473,15 +562,28 @@ def audit_models(path,cfg,now):
                     run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
                     allowed_future_hours=round(future_tol,3)))
             elif run_age>age_limit:
-                issues.append(issue("MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY","ERROR",model,"currentness",
-                    "A newer provider cycle should normally be available; the exact excess age is recorded.",
-                    run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
-                    maximum_run_age_hours=age_limit,excess_age_hours=round(run_age-age_limit,3)))
+                if model=="GEFS-control":
+                    mature_archive_exception,mature_archive_evidence=gefs_mature_cycle_archive_exception(d,run,now)
+                if mature_archive_exception:
+                    issues.append(issue("GEFS_NEWEST_MATURE_CYCLE_EXCEEDS_NOMINAL_CURRENTNESS","WARN",model,"currentness",
+                        "The GEFS cycle exceeds nominal forecast freshness but is proven to be the newest cycle whose cycle-specific full native horizon is published. It is retained for full-horizon archive validation but does not count as current forecast-family evidence.",
+                        run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
+                        maximum_run_age_hours=age_limit,excess_age_hours=round(run_age-age_limit,3),
+                        mature_cycle_selection=mature_archive_evidence))
+                else:
+                    issues.append(issue("MODEL_RUN_OLDER_THAN_CURRENTNESS_POLICY","ERROR",model,"currentness",
+                        "A newer provider cycle should normally be available; the exact excess age is recorded.",
+                        run_time_utc=run.isoformat(),checked_at_utc=now.isoformat(),run_age_hours=round(run_age,3),
+                        maximum_run_age_hours=age_limit,excess_age_hours=round(run_age-age_limit,3),
+                        mature_cycle_exception_validation=mature_archive_evidence))
 
         sources[model]={
             "family":FAMILY[model],"record_count":len(recs),
             "selected_run_time_utc":run.isoformat() if run else None,"selected_cycle_hour_utc":run_hour,
             "run_age_hours":round(run_age,3) if run_age is not None else None,"maximum_run_age_hours":age_limit,
+            "currentness_policy_mode":"nominal_age_gate_with_gefs_mature_archive_exception",
+            "gefs_mature_archive_exception_applied":bool(mature_archive_exception) if model=="GEFS-control" else False,
+            "gefs_mature_archive_evidence":mature_archive_evidence if model=="GEFS-control" else None,
             "provider_expected_max_horizon_hours":pmax,"project_desired_max_horizon_hours":max(desired_leads(model,cfg)),
             "expected_collection_leads_hours":expected,"received_leads_hours":got,"missing_expected_leads_hours":missing,
             "extra_received_leads_hours":extra,"project_desired_but_cycle_unavailable_leads_hours":project_gap,
