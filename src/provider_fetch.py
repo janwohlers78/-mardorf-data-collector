@@ -75,7 +75,10 @@ def fetch_base(d,model,test):
     elif model=="GFS":
         rows=base.derive(base.fetch_gfs(leads))
     elif model=="ECMWF-IFS":
-        rows=extra.fetch_ifs(leads)
+        gate=d.get("provider_cycle_gate") if isinstance(d.get("provider_cycle_gate"),dict) else {}
+        entry=(gate.get("models") or {}).get(model) if isinstance(gate.get("models"),dict) else {}
+        planned=entry.get("selected_run_time_utc") if isinstance(entry,dict) else None
+        rows=extra.fetch_ifs(leads,run_time=planned)
     elif model=="GEFS-control":
         rows,selection_evidence=extra.fetch_gefs(leads,return_selection_evidence=True)
         d.setdefault("provider_selection_evidence",{})["GEFS-control"]=selection_evidence
